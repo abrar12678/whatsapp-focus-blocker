@@ -1,13 +1,24 @@
 package com.example.whatsappfocusblocker.ui.main
 
+import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -21,22 +32,28 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -44,31 +61,59 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.whatsappfocusblocker.data.DefaultContactRepository
+import com.example.whatsappfocusblocker.data.contacts.AndroidDeviceContactsDataSource
+import com.example.whatsappfocusblocker.data.contacts.DeviceContact
 import com.example.whatsappfocusblocker.domain.model.BlockStatus
 import com.example.whatsappfocusblocker.domain.model.FocusContact
 import com.example.whatsappfocusblocker.theme.WhatsAppFocusBlockerTheme
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
     modifier: Modifier = Modifier,
-    viewModel: MainScreenViewModel = viewModel {
-        MainScreenViewModel(DefaultContactRepository())
-    }
+    viewModel: MainScreenViewModel = createDefaultViewModel(LocalContext.current)
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+    val context = LocalContext.current
+    val activity = context as? Activity
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        val shouldShowRationale = activity?.let {
+            ActivityCompat.shouldShowRequestPermissionRationale(it, Manifest.permission.READ_CONTACTS)
+        } ?: false
+        viewModel.onPermissionResult(isGranted, shouldShowRationale)
+    }
 
     LaunchedEffect(uiState.userNotice) {
         uiState.userNotice?.let { notice ->
             snackbarHostState.showSnackbar(notice)
             viewModel.dismissNotice()
+        }
+    }
+
+    val onSelectContactsClick = {
+        val hasPermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.READ_CONTACTS
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (hasPermission) {
+            viewModel.openPickerWithDeviceContacts()
+        } else {
+            permissionLauncher.launch(Manifest.permission.READ_CONTACTS)
         }
     }
 
@@ -79,12 +124,93 @@ fun MainScreen(
     ) { innerPadding ->
         MainContent(
             uiState = uiState,
-            onSelectContacts = viewModel::onSelectContactsClicked,
+            onSelectContacts = onSelectContactsClick,
             onBlockSelected = viewModel::onBlockSelectedClicked,
             onUnblockAll = viewModel::onUnblockAllClicked,
             onToggleContact = viewModel::onToggleContact,
             modifier = Modifier.padding(innerPadding)
         )
+    }
+
+    // Contact Picker Modal Bottom Sheet
+    if (uiState.isPickerOpen) {
+        ContactPickerBottomSheet(
+            uiState = uiState,
+            onSearchChange = viewModel::onSearchQueryChanged,
+            onToggleContact = viewModel::onTogglePickerSelection,
+            onSelectAll = viewModel::onSelectAllPickerContacts,
+            onConfirm = viewModel::onConfirmContactSelection,
+            onDismiss = viewModel::onDismissPicker
+        )
+    }
+
+    // Permission Rationale Dialog
+    if (uiState.showPermissionRationale) {
+        AlertDialog(
+            onDismissRequest = viewModel::onDismissPermissionRationale,
+            title = { Text("Contact Permission Required") },
+            text = {
+                Text("WhatsApp Focus Blocker needs permission to read your contacts locally so you can choose which contacts to restict during focus sessions. Your contacts remain strictly on this device and are never uploaded.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.onDismissPermissionRationale()
+                        permissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+                    }
+                ) {
+                    Text("Grant Permission")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::onDismissPermissionRationale) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Permanently Denied Dialog (Guide to App Settings)
+    if (uiState.showPermanentlyDeniedDialog) {
+        AlertDialog(
+            onDismissRequest = viewModel::onDismissPermanentlyDeniedDialog,
+            title = { Text("Permission Denied") },
+            text = {
+                Text("Contact permission is disabled for this app. To select contacts from your device address book, please open Settings and enable Contact access.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.onDismissPermanentlyDeniedDialog()
+                        val intent = Intent(
+                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.fromParts("package", context.packageName, null)
+                        )
+                        context.startActivity(intent)
+                    }
+                ) {
+                    Text("Open Settings")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::onDismissPermanentlyDeniedDialog) {
+                    Text("Not Now")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun createDefaultViewModel(context: Context): MainScreenViewModel {
+    return viewModel {
+        val prefs = context.getSharedPreferences(
+            DefaultContactRepository.PREFS_NAME,
+            Context.MODE_PRIVATE
+        )
+        val repository = DefaultContactRepository(prefs)
+        val dataSource = AndroidDeviceContactsDataSource(context.contentResolver)
+        MainScreenViewModel(repository, dataSource)
     }
 }
 
@@ -128,7 +254,6 @@ fun MainContent(
         contentPadding = PaddingValues(vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // 1. Focus Session Overview Card
         item {
             FocusStatusCard(
                 isFocusActive = uiState.isFocusActive,
@@ -138,12 +263,10 @@ fun MainContent(
             )
         }
 
-        // 2. Clear Technical Reality & Policy Disclosure Card
         item {
             TechnicalNoticeCard()
         }
 
-        // 3. Action Controls
         item {
             ActionControlsCard(
                 selectedCount = uiState.selectedCount,
@@ -154,10 +277,9 @@ fun MainContent(
             )
         }
 
-        // 4. Contact List Section Header
         item {
             Text(
-                text = "Target Contacts (${uiState.totalCount})",
+                text = "Tracked Focus Contacts (${uiState.totalCount})",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -165,7 +287,6 @@ fun MainContent(
             )
         }
 
-        // 5. Contact List / Empty State
         if (uiState.contacts.isEmpty()) {
             item {
                 EmptyContactsCard(onSelectContacts = onSelectContacts)
@@ -297,7 +418,7 @@ fun TechnicalNoticeCard(modifier: Modifier = Modifier) {
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Real WhatsApp blocking is not yet implemented. WhatsApp does not provide a public third-party blocking API. In subsequent steps, we will investigate policy-compliant, user-assisted actions with complete transparency.",
+                    text = "Real WhatsApp blocking is not yet implemented. Contacts selected here are stored strictly on your device. We will investigate user-consented automation in Step 5 without faking success.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -417,7 +538,7 @@ fun EmptyContactsCard(
             Spacer(modifier = Modifier.height(6.dp))
 
             Text(
-                text = "Tap 'Select Contacts' to add WhatsApp contacts you wish to restrict during your focus sessions. No fake contacts are displayed.",
+                text = "Tap 'Select Contacts' to choose WhatsApp contacts from your device. Contacts remain 100% private and stored locally.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
@@ -497,6 +618,192 @@ fun ContactStatusBadge(status: BlockStatus) {
             color = textColor,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ContactPickerBottomSheet(
+    uiState: FocusUiState,
+    onSearchChange: (String) -> Unit,
+    onToggleContact: (String) -> Unit,
+    onSelectAll: (Boolean) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.85f)
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+        ) {
+            // Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Select Device Contacts",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                TextButton(onClick = onDismiss) {
+                    Text("Close")
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Search Bar
+            OutlinedTextField(
+                value = uiState.searchQuery,
+                onValueChange = onSearchChange,
+                placeholder = { Text("Search by name or number...") },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(10.dp),
+                singleLine = true
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Bulk action bar
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val filtered = uiState.filteredDeviceContacts
+                val allSelected = filtered.isNotEmpty() && filtered.all { uiState.pickerSelectedIds.contains(it.id) }
+
+                Text(
+                    text = "Found ${filtered.size} contacts",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                TextButton(onClick = { onSelectAll(!allSelected) }) {
+                    Text(if (allSelected) "Deselect All" else "Select All")
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // Contact List or Loading or Empty
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                if (uiState.isPickerLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.align(Alignment.Center)
+                    )
+                } else if (uiState.filteredDeviceContacts.isEmpty()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            text = if (uiState.searchQuery.isBlank()) "No contacts found on this device" else "No matching contacts found",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(uiState.filteredDeviceContacts, key = { it.id }) { devContact ->
+                            val isSelected = uiState.pickerSelectedIds.contains(devContact.id)
+                            PickerContactItem(
+                                contact = devContact,
+                                isSelected = isSelected,
+                                onToggle = { onToggleContact(devContact.id) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Bottom Actions Bar
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("Cancel")
+                }
+                Button(
+                    onClick = onConfirm,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("Confirm (${uiState.pickerSelectedIds.size})")
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+}
+
+@Composable
+fun PickerContactItem(
+    contact: DeviceContact,
+    isSelected: Boolean,
+    onToggle: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onToggle() },
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f) else MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Checkbox(
+                checked = isSelected,
+                onCheckedChange = { onToggle() }
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = contact.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = contact.phoneNumber,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }
 

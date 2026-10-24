@@ -1,5 +1,7 @@
 package com.example.whatsappfocusblocker.domain.model
 
+import kotlinx.serialization.Serializable
+
 /**
  * Represents a contact tracked by WhatsApp Focus Blocker.
  *
@@ -11,6 +13,7 @@ package com.example.whatsappfocusblocker.domain.model
  * @param blockedByAppTimestamp Epoch millisecond timestamp when blocked by this app, or null
  * @param lastActionMessage Diagnostic message or reason for current status
  */
+@Serializable
 data class FocusContact(
     val id: String,
     val name: String,

@@ -1,5 +1,7 @@
 package com.example.whatsappfocusblocker.domain.model
 
+import kotlinx.serialization.Serializable
+
 /**
  * Represents the block ownership and current state of a contact.
  *
@@ -7,6 +9,7 @@ package com.example.whatsappfocusblocker.domain.model
  * "Unblock All" must ONLY target contacts with status [BLOCKED_BY_APP].
  * Contacts marked as [MANUALLY_BLOCKED_EXTERNAL] or [UNBLOCKED] must NEVER be unblocked by automated actions.
  */
+@Serializable
 enum class BlockStatus {
     /** Contact is active and not blocked. */
     UNBLOCKED,
