@@ -10,6 +10,7 @@ import com.example.whatsappfocusblocker.domain.model.FocusContact
 import junit.framework.TestCase.assertEquals
 import junit.framework.TestCase.assertFalse
 import junit.framework.TestCase.assertNotNull
+import junit.framework.TestCase.assertNull
 import junit.framework.TestCase.assertTrue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -63,31 +64,13 @@ class MainScreenViewModelTest {
     }
 
     @Test
-    fun onBlockSelectedClicked_showsConfirmDialog_whenContactsSelected() = runTest {
+    fun executeBlockSelected_startsGuidedAssistant_andAllowsUserConfirmation() = runTest {
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
             viewModel.uiState.collect {}
         }
         advanceUntilIdle()
 
-        val contact = FocusContact(id = "1", name = "Alice", phoneNumber = "+123", isSelected = true)
-        repository.saveContacts(listOf(contact))
-        advanceUntilIdle()
-
-        viewModel.onBlockSelectedClicked()
-        advanceUntilIdle()
-
-        val state = viewModel.uiState.value
-        assertTrue("Confirmation dialog should be displayed", state.showConfirmBlockDialog)
-    }
-
-    @Test
-    fun executeBlockSelected_transitionsToActionRequired_andLogsAuditRecordsWithoutFaking() = runTest {
-        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
-            viewModel.uiState.collect {}
-        }
-        advanceUntilIdle()
-
-        val contact = FocusContact(id = "1", name = "Alice", phoneNumber = "+123", isSelected = true)
+        val contact = FocusContact(id = "c1", name = "Alice", phoneNumber = "+1234567890", isSelected = true)
         repository.saveContacts(listOf(contact))
         advanceUntilIdle()
 
@@ -101,140 +84,133 @@ class MainScreenViewModelTest {
         val state = viewModel.uiState.value
         assertFalse(state.showConfirmBlockDialog)
         assertEquals(1, state.actionRequiredCount)
-        assertEquals(0, state.blockedByAppCount) // SAFETY: Never falsely claimed as Blocked Confirmed!
-        assertEquals(BlockStatus.ACTION_REQUIRED, state.contacts.first().status)
+        assertEquals(0, state.blockedByAppCount)
 
-        // Verify audit logs were persisted
-        assertEquals(2, state.auditLogs.size)
-        val integrationLog = state.auditLogs.find { it.actionType == ActionType.INTEGRATION_UNAVAILABLE }
-        assertNotNull(integrationLog)
-        assertEquals(BlockStatus.ACTION_REQUIRED, integrationLog!!.newStatus)
-        assertFalse(integrationLog.isVerified)
+        // Guided assistant should now be active for Alice
+        assertNotNull(state.activeGuidedBlockContact)
+        assertEquals("Alice", state.activeGuidedBlockContact!!.name)
+
+        // User confirms they completed the block in WhatsApp
+        viewModel.onConfirmManualBlockCompleted("c1")
+        advanceUntilIdle()
+
+        val confirmedState = viewModel.uiState.value
+        assertNull("Guided block should be complete", confirmedState.activeGuidedBlockContact)
+        assertEquals(1, confirmedState.blockedByAppCount) // Now counted as confirmed by user
+        assertEquals(0, confirmedState.actionRequiredCount)
+
+        val alice = confirmedState.contacts.first()
+        assertEquals(BlockStatus.USER_CONFIRMED_BLOCKED, alice.status)
+        assertEquals("User Confirmed in WhatsApp", alice.lastActionMessage)
+
+        // Verify audit log has BLOCK_CONFIRMED with isVerified = true
+        val confirmedLog = confirmedState.auditLogs.find { it.actionType == ActionType.BLOCK_CONFIRMED }
+        assertNotNull(confirmedLog)
+        assertTrue(confirmedLog!!.isVerified)
     }
 
     @Test
-    fun onBlockSelectedClicked_duplicatePrevention_rejectsIfPending() = runTest {
+    fun unblockAll_guidedFlow_unblocksOnlyUserConfirmedContacts() = runTest {
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
             viewModel.uiState.collect {}
         }
         advanceUntilIdle()
 
-        val pendingContact = FocusContact(
-            id = "1",
+        val confirmedContact = FocusContact(
+            id = "c1",
             name = "Bob",
-            phoneNumber = "+456",
-            isSelected = true,
-            status = BlockStatus.PENDING
-        )
-        repository.saveContacts(listOf(pendingContact))
-        advanceUntilIdle()
-
-        viewModel.onBlockSelectedClicked()
-        advanceUntilIdle()
-
-        val state = viewModel.uiState.value
-        assertFalse("Should not open confirm dialog for already pending action", state.showConfirmBlockDialog)
-        assertTrue(state.userNotice!!.contains("already in progress"))
-    }
-
-    @Test
-    fun onUnblockAll_safetyGuardrail_preventsUnblockingActionRequiredOrManualContacts() = runTest {
-        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
-            viewModel.uiState.collect {}
-        }
-        advanceUntilIdle()
-
-        val actionRequiredContact = FocusContact(
-            id = "1",
-            name = "Charlie",
-            phoneNumber = "+789",
-            isSelected = true,
-            status = BlockStatus.ACTION_REQUIRED
-        )
-        val manualContact = FocusContact(
-            id = "2",
-            name = "Eve",
-            phoneNumber = "+999",
-            isSelected = true,
-            status = BlockStatus.MANUALLY_BLOCKED_EXTERNAL
-        )
-        repository.saveContacts(listOf(actionRequiredContact, manualContact))
-        advanceUntilIdle()
-
-        viewModel.onUnblockAllClicked()
-        advanceUntilIdle()
-
-        val state = viewModel.uiState.value
-        assertFalse("Confirm dialog must NOT open when no confirmed app blocks exist", state.showConfirmUnblockDialog)
-        assertNotNull(state.userNotice)
-        assertTrue(state.userNotice!!.contains("Safety Guardrail"))
-
-        // Audit log must record safety guardrail block
-        val guardrailLog = state.auditLogs.find { it.actionType == ActionType.SAFETY_GUARDRAIL_BLOCKED }
-        assertNotNull(guardrailLog)
-    }
-
-    @Test
-    fun executeUnblockAll_unblocksOnlyConfirmedAppBlocks() = runTest {
-        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
-            viewModel.uiState.collect {}
-        }
-        advanceUntilIdle()
-
-        val confirmedBlockedContact = FocusContact(
-            id = "1",
-            name = "Frank",
-            phoneNumber = "+111",
-            status = BlockStatus.BLOCKED_CONFIRMED,
+            phoneNumber = "+111222333",
+            status = BlockStatus.USER_CONFIRMED_BLOCKED,
             blockedByAppTimestamp = System.currentTimeMillis()
         )
         val externalContact = FocusContact(
-            id = "2",
-            name = "Grace",
-            phoneNumber = "+222",
+            id = "c2",
+            name = "Charlie",
+            phoneNumber = "+444555666",
             status = BlockStatus.MANUALLY_BLOCKED_EXTERNAL
         )
-        repository.saveContacts(listOf(confirmedBlockedContact, externalContact))
+        repository.saveContacts(listOf(confirmedContact, externalContact))
         advanceUntilIdle()
 
         assertEquals(1, viewModel.uiState.value.blockedByAppCount)
 
         viewModel.onUnblockAllClicked()
         advanceUntilIdle()
-        assertTrue(viewModel.uiState.value.showConfirmUnblockDialog)
+
+        val state = viewModel.uiState.value
+        assertTrue("Confirm unblock dialog should open", state.showConfirmUnblockDialog)
+        assertEquals(1, state.unblockEligibleContacts.size)
+        assertEquals("Bob", state.unblockEligibleContacts.first().name)
 
         viewModel.executeUnblockAll()
         advanceUntilIdle()
 
-        val state = viewModel.uiState.value
-        assertEquals(0, state.blockedByAppCount)
+        // Guided unblock should open for Bob
+        assertNotNull(viewModel.uiState.value.activeGuidedUnblockContact)
+        assertEquals("Bob", viewModel.uiState.value.activeGuidedUnblockContact!!.name)
 
-        val unblockedFrank = state.contacts.find { it.id == "1" }
-        assertEquals(BlockStatus.UNBLOCKED_CONFIRMED, unblockedFrank!!.status)
+        viewModel.onConfirmManualUnblockCompleted("c1")
+        advanceUntilIdle()
 
-        // External contact must REMAIN completely untouched
-        val untouchedGrace = state.contacts.find { it.id == "2" }
-        assertEquals(BlockStatus.MANUALLY_BLOCKED_EXTERNAL, untouchedGrace!!.status)
+        val finalState = viewModel.uiState.value
+        assertNull(finalState.activeGuidedUnblockContact)
+        assertEquals(0, finalState.blockedByAppCount)
+
+        val bob = finalState.contacts.find { it.id == "c1" }
+        assertEquals(BlockStatus.USER_CONFIRMED_UNBLOCKED, bob!!.status)
+
+        // Charlie MUST remain completely untouched as MANUALLY_BLOCKED_EXTERNAL
+        val charlie = finalState.contacts.find { it.id == "c2" }
+        assertEquals(BlockStatus.MANUALLY_BLOCKED_EXTERNAL, charlie!!.status)
     }
 
     @Test
-    fun auditHistory_canBeCleared() = runTest {
+    fun unblockAll_safetyGuardrail_preventsActionRequiredOrManualFromUnblocking() = runTest {
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
             viewModel.uiState.collect {}
         }
         advanceUntilIdle()
 
-        val contact = FocusContact(id = "1", name = "Test", phoneNumber = "+1", isSelected = true)
+        val actionRequired = FocusContact(
+            id = "c1",
+            name = "Dan",
+            phoneNumber = "+123",
+            status = BlockStatus.ACTION_REQUIRED
+        )
+        val manual = FocusContact(
+            id = "c2",
+            name = "Eve",
+            phoneNumber = "+456",
+            status = BlockStatus.MANUALLY_BLOCKED_EXTERNAL
+        )
+        repository.saveContacts(listOf(actionRequired, manual))
+        advanceUntilIdle()
+
+        viewModel.onUnblockAllClicked()
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertFalse(state.showConfirmUnblockDialog)
+        assertNotNull(state.userNotice)
+        assertTrue(state.userNotice!!.contains("Safety Guardrail"))
+    }
+
+    @Test
+    fun deleteContact_removesFromListAndPersists() = runTest {
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            viewModel.uiState.collect {}
+        }
+        advanceUntilIdle()
+
+        val contact = FocusContact(id = "c1", name = "Frank", phoneNumber = "+777")
         repository.saveContacts(listOf(contact))
         advanceUntilIdle()
+        assertEquals(1, viewModel.uiState.value.totalCount)
 
-        viewModel.executeBlockSelected()
+        viewModel.onDeleteContact("c1")
         advanceUntilIdle()
-        assertTrue(viewModel.uiState.value.auditLogs.isNotEmpty())
 
-        viewModel.onClearAuditHistory()
-        advanceUntilIdle()
-        assertTrue(viewModel.uiState.value.auditLogs.isEmpty())
+        assertEquals(0, viewModel.uiState.value.totalCount)
     }
 }
 

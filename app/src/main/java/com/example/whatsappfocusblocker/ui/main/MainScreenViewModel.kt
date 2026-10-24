@@ -36,6 +36,10 @@ data class FocusUiState(
     val showConfirmUnblockDialog: Boolean = false,
     val showAuditHistoryDialog: Boolean = false,
 
+    // Assisted WhatsApp Guide Dialogs
+    val activeGuidedBlockContact: FocusContact? = null,
+    val activeGuidedUnblockContact: FocusContact? = null,
+
     // Permission Dialog State
     val showPermissionRationale: Boolean = false,
     val showPermanentlyDeniedDialog: Boolean = false
@@ -44,7 +48,7 @@ data class FocusUiState(
         get() = contacts.count { it.isSelected }
 
     val blockedByAppCount: Int
-        get() = contacts.count { it.status == BlockStatus.BLOCKED_CONFIRMED || it.status == BlockStatus.BLOCKED_BY_APP }
+        get() = contacts.count { it.canBeUnblockedByApp() }
 
     val actionRequiredCount: Int
         get() = contacts.count { it.status == BlockStatus.ACTION_REQUIRED }
@@ -91,6 +95,12 @@ class MainScreenViewModel(
     private val _showConfirmUnblockDialog = MutableStateFlow(false)
     private val _showAuditHistoryDialog = MutableStateFlow(false)
 
+    // Guided assistant flows
+    private val _activeGuidedBlockContact = MutableStateFlow<FocusContact?>(null)
+    private val _activeGuidedUnblockContact = MutableStateFlow<FocusContact?>(null)
+    private var guidedBlockQueue = mutableListOf<FocusContact>()
+    private var guidedUnblockQueue = mutableListOf<FocusContact>()
+
     // Permission dialog flows
     private val _showPermissionRationale = MutableStateFlow(false)
     private val _showPermanentlyDeniedDialog = MutableStateFlow(false)
@@ -109,6 +119,8 @@ class MainScreenViewModel(
         _showConfirmBlockDialog,
         _showConfirmUnblockDialog,
         _showAuditHistoryDialog,
+        _activeGuidedBlockContact,
+        _activeGuidedUnblockContact,
         _showPermissionRationale,
         _showPermanentlyDeniedDialog
     ) { args: Array<Any?> ->
@@ -127,8 +139,10 @@ class MainScreenViewModel(
             showConfirmBlockDialog = args[10] as Boolean,
             showConfirmUnblockDialog = args[11] as Boolean,
             showAuditHistoryDialog = args[12] as Boolean,
-            showPermissionRationale = args[13] as Boolean,
-            showPermanentlyDeniedDialog = args[14] as Boolean
+            activeGuidedBlockContact = args[13] as FocusContact?,
+            activeGuidedUnblockContact = args[14] as FocusContact?,
+            showPermissionRationale = args[15] as Boolean,
+            showPermanentlyDeniedDialog = args[16] as Boolean
         )
     }.stateIn(
         scope = viewModelScope,
@@ -248,7 +262,7 @@ class MainScreenViewModel(
         _searchQuery.value = ""
     }
 
-    // Step 3: Block Selected Flow with Confirmation
+    // Block Selected Flow with Confirmation & Step-by-Step Guide
     fun onBlockSelectedClicked() {
         val selected = uiState.value.selectedContacts
 
@@ -257,7 +271,6 @@ class MainScreenViewModel(
             return
         }
 
-        // Prevent duplicate actions if already pending
         if (selected.any { it.status == BlockStatus.PENDING }) {
             _userNotice.value = "An action is already in progress for selected contacts."
             return
@@ -281,7 +294,6 @@ class MainScreenViewModel(
             selected.forEach { contact ->
                 val prevStatus = contact.status
 
-                // 1. Audit initiation
                 val initiatedAudit = ActionAuditRecord(
                     id = UUID.randomUUID().toString(),
                     timestamp = now,
@@ -296,8 +308,7 @@ class MainScreenViewModel(
                 )
                 contactRepository.recordAuditLog(initiatedAudit)
 
-                // 2. Technical reality: WhatsApp automation is not yet configured.
-                // HONESTY INVARIANT: Never label a contact Blocked Confirmed until genuinely verified.
+                // HONESTY: Never label as Blocked Confirmed until verified. Set to ACTION_REQUIRED.
                 val integrationAudit = ActionAuditRecord(
                     id = UUID.randomUUID().toString(),
                     timestamp = now + 1,
@@ -307,26 +318,104 @@ class MainScreenViewModel(
                     phoneNumber = contact.phoneNumber,
                     previousStatus = BlockStatus.PENDING,
                     newStatus = BlockStatus.ACTION_REQUIRED,
-                    details = "WhatsApp blocking automation is not configured. Real WhatsApp blocking action required.",
+                    details = "WhatsApp automation not configured. User-assisted manual block required.",
                     isVerified = false
                 )
                 contactRepository.recordAuditLog(integrationAudit)
 
-                // Update contact to explicit ACTION_REQUIRED state
                 contactRepository.updateContactStatus(
                     contactId = contact.id,
                     newStatus = BlockStatus.ACTION_REQUIRED,
                     blockedByAppTimestamp = null,
-                    message = "Integration not configured - manual block required in WhatsApp"
+                    message = "Action Required: Tap to block in WhatsApp"
                 )
             }
 
             _isFocusActive.value = true
-            _userNotice.value = "Marked ${selected.size} contacts as Action Required (Integration not configured)."
+
+            // Enqueue selected contacts for step-by-step guidance
+            guidedBlockQueue = selected.toMutableList()
+            advanceGuidedBlock()
         }
     }
 
-    // Step 3: Unblock All Flow with Confirmation & Safety Guardrails
+    fun startGuidedBlockForContact(contact: FocusContact) {
+        guidedBlockQueue = mutableListOf(contact)
+        advanceGuidedBlock()
+    }
+
+    private fun advanceGuidedBlock() {
+        if (guidedBlockQueue.isNotEmpty()) {
+            _activeGuidedBlockContact.value = guidedBlockQueue.removeAt(0)
+        } else {
+            _activeGuidedBlockContact.value = null
+        }
+    }
+
+    fun onConfirmManualBlockCompleted(contactId: String) {
+        val currentContact = uiState.value.contacts.find { it.id == contactId }
+            ?: _activeGuidedBlockContact.value
+            ?: return
+
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+
+            val confirmedAudit = ActionAuditRecord(
+                id = UUID.randomUUID().toString(),
+                timestamp = now,
+                actionType = ActionType.BLOCK_CONFIRMED,
+                contactId = currentContact.id,
+                contactName = currentContact.name,
+                phoneNumber = currentContact.phoneNumber,
+                previousStatus = currentContact.status,
+                newStatus = BlockStatus.USER_CONFIRMED_BLOCKED,
+                details = "User explicitly confirmed manual block completed in WhatsApp",
+                isVerified = true
+            )
+            contactRepository.recordAuditLog(confirmedAudit)
+
+            contactRepository.updateContactStatus(
+                contactId = currentContact.id,
+                newStatus = BlockStatus.USER_CONFIRMED_BLOCKED,
+                blockedByAppTimestamp = now,
+                message = "User Confirmed in WhatsApp"
+            )
+
+            _userNotice.value = "Recorded '${currentContact.name}' as User Confirmed Blocked."
+            advanceGuidedBlock()
+        }
+    }
+
+    fun onSkipGuidedBlock(contactId: String) {
+        val currentContact = uiState.value.contacts.find { it.id == contactId }
+            ?: _activeGuidedBlockContact.value
+
+        if (currentContact != null) {
+            viewModelScope.launch {
+                val skipAudit = ActionAuditRecord(
+                    id = UUID.randomUUID().toString(),
+                    timestamp = System.currentTimeMillis(),
+                    actionType = ActionType.BLOCK_FAILED,
+                    contactId = currentContact.id,
+                    contactName = currentContact.name,
+                    phoneNumber = currentContact.phoneNumber,
+                    previousStatus = currentContact.status,
+                    newStatus = BlockStatus.ACTION_REQUIRED,
+                    details = "User skipped or cancelled block confirmation",
+                    isVerified = false
+                )
+                contactRepository.recordAuditLog(skipAudit)
+            }
+        }
+        advanceGuidedBlock()
+    }
+
+    fun onDismissGuidedBlock() {
+        guidedBlockQueue.clear()
+        _activeGuidedBlockContact.value = null
+    }
+
+    // Unblock All Flow with Confirmation & Guided Assistant
     fun onUnblockAllClicked() {
         val eligible = uiState.value.unblockEligibleContacts
 
@@ -372,40 +461,79 @@ class MainScreenViewModel(
         val eligible = uiState.value.unblockEligibleContacts
         if (eligible.isEmpty()) return
 
-        viewModelScope.launch {
-            val now = System.currentTimeMillis()
+        // Launch step-by-step unblock guidance for confirmed contacts
+        guidedUnblockQueue = eligible.toMutableList()
+        advanceGuidedUnblock()
+    }
 
-            eligible.forEach { contact ->
-                val prevStatus = contact.status
+    fun startGuidedUnblockForContact(contact: FocusContact) {
+        guidedUnblockQueue = mutableListOf(contact)
+        advanceGuidedUnblock()
+    }
 
-                val unblockAudit = ActionAuditRecord(
-                    id = UUID.randomUUID().toString(),
-                    timestamp = now,
-                    actionType = ActionType.UNBLOCK_CONFIRMED,
-                    contactId = contact.id,
-                    contactName = contact.name,
-                    phoneNumber = contact.phoneNumber,
-                    previousStatus = prevStatus,
-                    newStatus = BlockStatus.UNBLOCKED_CONFIRMED,
-                    details = "Unblocked contacts confirmed blocked by this app",
-                    isVerified = true
-                )
-                contactRepository.recordAuditLog(unblockAudit)
-
-                contactRepository.updateContactStatus(
-                    contactId = contact.id,
-                    newStatus = BlockStatus.UNBLOCKED_CONFIRMED,
-                    blockedByAppTimestamp = null,
-                    message = "Unblocked verified by app"
-                )
+    private fun advanceGuidedUnblock() {
+        if (guidedUnblockQueue.isNotEmpty()) {
+            _activeGuidedUnblockContact.value = guidedUnblockQueue.removeAt(0)
+        } else {
+            _activeGuidedUnblockContact.value = null
+            if (uiState.value.unblockEligibleContacts.isEmpty()) {
+                _isFocusActive.value = false
             }
-
-            _isFocusActive.value = false
-            _userNotice.value = "Unblocked ${eligible.size} confirmed contacts."
         }
     }
 
-    // Step 3: Audit Log Dialog Controls
+    fun onConfirmManualUnblockCompleted(contactId: String) {
+        val currentContact = uiState.value.contacts.find { it.id == contactId }
+            ?: _activeGuidedUnblockContact.value
+            ?: return
+
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+
+            val unblockAudit = ActionAuditRecord(
+                id = UUID.randomUUID().toString(),
+                timestamp = now,
+                actionType = ActionType.UNBLOCK_CONFIRMED,
+                contactId = currentContact.id,
+                contactName = currentContact.name,
+                phoneNumber = currentContact.phoneNumber,
+                previousStatus = currentContact.status,
+                newStatus = BlockStatus.USER_CONFIRMED_UNBLOCKED,
+                details = "User explicitly confirmed manual unblock in WhatsApp",
+                isVerified = true
+            )
+            contactRepository.recordAuditLog(unblockAudit)
+
+            contactRepository.updateContactStatus(
+                contactId = currentContact.id,
+                newStatus = BlockStatus.USER_CONFIRMED_UNBLOCKED,
+                blockedByAppTimestamp = null,
+                message = "User Confirmed Unblocked"
+            )
+
+            _userNotice.value = "Recorded '${currentContact.name}' as User Confirmed Unblocked."
+            advanceGuidedUnblock()
+        }
+    }
+
+    fun onSkipGuidedUnblock(contactId: String) {
+        advanceGuidedUnblock()
+    }
+
+    fun onDismissGuidedUnblock() {
+        guidedUnblockQueue.clear()
+        _activeGuidedUnblockContact.value = null
+    }
+
+    // Delete contact from focus list
+    fun onDeleteContact(contactId: String) {
+        viewModelScope.launch {
+            contactRepository.deleteContact(contactId)
+            _userNotice.value = "Contact removed from focus list."
+        }
+    }
+
+    // Audit Log Dialog Controls
     fun onOpenAuditHistory() {
         _showAuditHistoryDialog.value = true
     }
@@ -424,6 +552,24 @@ class MainScreenViewModel(
     fun onToggleContact(contactId: String, isSelected: Boolean) {
         viewModelScope.launch {
             contactRepository.toggleContactSelection(contactId, isSelected)
+        }
+    }
+
+    fun recordLauncherAudit(contact: FocusContact, success: Boolean, message: String) {
+        viewModelScope.launch {
+            val audit = ActionAuditRecord(
+                id = UUID.randomUUID().toString(),
+                timestamp = System.currentTimeMillis(),
+                actionType = if (success) ActionType.BLOCK_INITIATED else ActionType.BLOCK_FAILED,
+                contactId = contact.id,
+                contactName = contact.name,
+                phoneNumber = contact.phoneNumber,
+                previousStatus = contact.status,
+                newStatus = contact.status,
+                details = message,
+                isVerified = success
+            )
+            contactRepository.recordAuditLog(audit)
         }
     }
 

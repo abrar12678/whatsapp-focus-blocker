@@ -77,6 +77,8 @@ import com.example.whatsappfocusblocker.domain.model.ActionAuditRecord
 import com.example.whatsappfocusblocker.domain.model.BlockStatus
 import com.example.whatsappfocusblocker.domain.model.FocusContact
 import com.example.whatsappfocusblocker.theme.WhatsAppFocusBlockerTheme
+import com.example.whatsappfocusblocker.util.WhatsAppLaunchResult
+import com.example.whatsappfocusblocker.util.WhatsAppLauncher
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -137,6 +139,9 @@ fun MainScreen(
             onBlockSelected = viewModel::onBlockSelectedClicked,
             onUnblockAll = viewModel::onUnblockAllClicked,
             onToggleContact = viewModel::onToggleContact,
+            onStartGuidedBlock = viewModel::startGuidedBlockForContact,
+            onStartGuidedUnblock = viewModel::startGuidedUnblockForContact,
+            onDeleteContact = viewModel::onDeleteContact,
             modifier = Modifier.padding(innerPadding)
         )
     }
@@ -153,7 +158,7 @@ fun MainScreen(
         )
     }
 
-    // Step 3: Confirm Block Selected Dialog
+    // Confirmation Dialogs
     if (uiState.showConfirmBlockDialog) {
         ConfirmBlockDialog(
             selectedContacts = uiState.selectedContacts,
@@ -162,7 +167,6 @@ fun MainScreen(
         )
     }
 
-    // Step 3: Confirm Unblock All Dialog
     if (uiState.showConfirmUnblockDialog) {
         ConfirmUnblockDialog(
             eligibleContacts = uiState.unblockEligibleContacts,
@@ -171,7 +175,34 @@ fun MainScreen(
         )
     }
 
-    // Step 3: Audit History Dialog
+    // Step-by-Step Guided Assistant Dialogs
+    uiState.activeGuidedBlockContact?.let { contact ->
+        AssistedBlockGuideDialog(
+            contact = contact,
+            onOpenWhatsApp = {
+                val result = WhatsAppLauncher.openChat(context, contact.phoneNumber)
+                handleLaunchResult(context, contact, result, viewModel)
+            },
+            onConfirmBlocked = { viewModel.onConfirmManualBlockCompleted(contact.id) },
+            onSkip = { viewModel.onSkipGuidedBlock(contact.id) },
+            onDismiss = viewModel::onDismissGuidedBlock
+        )
+    }
+
+    uiState.activeGuidedUnblockContact?.let { contact ->
+        AssistedUnblockGuideDialog(
+            contact = contact,
+            onOpenWhatsApp = {
+                val result = WhatsAppLauncher.openChat(context, contact.phoneNumber)
+                handleLaunchResult(context, contact, result, viewModel)
+            },
+            onConfirmUnblocked = { viewModel.onConfirmManualUnblockCompleted(contact.id) },
+            onSkip = { viewModel.onSkipGuidedUnblock(contact.id) },
+            onDismiss = viewModel::onDismissGuidedUnblock
+        )
+    }
+
+    // Audit History Dialog
     if (uiState.showAuditHistoryDialog) {
         AuditHistoryDialog(
             auditLogs = uiState.auditLogs,
@@ -180,7 +211,7 @@ fun MainScreen(
         )
     }
 
-    // Permission Rationale Dialog
+    // Permission Dialogs
     if (uiState.showPermissionRationale) {
         AlertDialog(
             onDismissRequest = viewModel::onDismissPermissionRationale,
@@ -206,7 +237,6 @@ fun MainScreen(
         )
     }
 
-    // Permanently Denied Dialog (Guide to App Settings)
     if (uiState.showPermanentlyDeniedDialog) {
         AlertDialog(
             onDismissRequest = viewModel::onDismissPermanentlyDeniedDialog,
@@ -234,6 +264,29 @@ fun MainScreen(
                 }
             }
         )
+    }
+}
+
+private fun handleLaunchResult(
+    context: Context,
+    contact: FocusContact,
+    result: WhatsAppLaunchResult,
+    viewModel: MainScreenViewModel
+) {
+    when (result) {
+        WhatsAppLaunchResult.Success -> {
+            viewModel.recordLauncherAudit(contact, true, "Opened WhatsApp chat via deep link")
+        }
+        WhatsAppLaunchResult.WhatsAppNotInstalled -> {
+            viewModel.recordLauncherAudit(contact, false, "WhatsApp app is not installed on device")
+            WhatsAppLauncher.openPlayStoreForWhatsApp(context)
+        }
+        is WhatsAppLaunchResult.InvalidPhoneNumber -> {
+            viewModel.recordLauncherAudit(contact, false, result.message)
+        }
+        is WhatsAppLaunchResult.Error -> {
+            viewModel.recordLauncherAudit(contact, false, result.throwable.message ?: "Failed to launch intent")
+        }
     }
 }
 
@@ -289,6 +342,9 @@ fun MainContent(
     onBlockSelected: () -> Unit,
     onUnblockAll: () -> Unit,
     onToggleContact: (String, Boolean) -> Unit,
+    onStartGuidedBlock: (FocusContact) -> Unit,
+    onStartGuidedUnblock: (FocusContact) -> Unit,
+    onDeleteContact: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     LazyColumn(
@@ -340,7 +396,10 @@ fun MainContent(
             items(uiState.contacts, key = { it.id }) { contact ->
                 ContactListItem(
                     contact = contact,
-                    onToggleSelect = { isChecked -> onToggleContact(contact.id, isChecked) }
+                    onToggleSelect = { isChecked -> onToggleContact(contact.id, isChecked) },
+                    onStartGuidedBlock = { onStartGuidedBlock(contact) },
+                    onStartGuidedUnblock = { onStartGuidedUnblock(contact) },
+                    onDelete = { onDeleteContact(contact.id) }
                 )
             }
         }
@@ -458,14 +517,14 @@ fun TechnicalNoticeCard(modifier: Modifier = Modifier) {
             Spacer(modifier = Modifier.width(10.dp))
             Column {
                 Text(
-                    text = "Notice: Action Tracking & Safety Mode",
+                    text = "Safe User-Assisted WhatsApp Guide",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "WhatsApp has no official third-party blocking API. Every action attempt is logged in your local audit history. Contacts are never labeled 'Blocked Confirmed' until an actual block is verified.",
+                    text = "WhatsApp provides no official third-party blocking API. This app uses safe deep links to open conversations and guides you through manual blocking. Contacts are marked 'User Confirmed' only after your explicit confirmation.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -606,6 +665,9 @@ fun EmptyContactsCard(
 fun ContactListItem(
     contact: FocusContact,
     onToggleSelect: (Boolean) -> Unit,
+    onStartGuidedBlock: () -> Unit,
+    onStartGuidedUnblock: () -> Unit,
+    onDelete: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -616,38 +678,85 @@ fun ContactListItem(
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.5.dp)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Checkbox(
-                checked = contact.isSelected,
-                onCheckedChange = onToggleSelect
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = contact.name,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Medium
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
+                    checked = contact.isSelected,
+                    onCheckedChange = onToggleSelect
                 )
-                Text(
-                    text = contact.phoneNumber,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = contact.name,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = contact.phoneNumber,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                ContactStatusBadge(status = contact.status)
+            }
+
+            // Quick Actions row
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 48.dp, top = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 contact.lastActionMessage?.let { msg ->
                     Text(
                         text = msg,
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                        modifier = Modifier.weight(1f)
                     )
+                } ?: Spacer(modifier = Modifier.weight(1f))
+
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (contact.status == BlockStatus.ACTION_REQUIRED || contact.status == BlockStatus.SELECTED) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            modifier = Modifier.clickable { onStartGuidedBlock() }
+                        ) {
+                            Text(
+                                text = "Block in WA",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    } else if (contact.canBeUnblockedByApp()) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            modifier = Modifier.clickable { onStartGuidedUnblock() }
+                        ) {
+                            Text(
+                                text = "Unblock in WA",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
+                    TextButton(onClick = onDelete) {
+                        Text("Remove", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                    }
                 }
             }
-            Spacer(modifier = Modifier.width(8.dp))
-            ContactStatusBadge(status = contact.status)
         }
     }
 }
@@ -659,7 +768,9 @@ fun ContactStatusBadge(status: BlockStatus) {
         BlockStatus.SELECTED -> Triple("Selected", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant)
         BlockStatus.PENDING -> Triple("Pending", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant)
         BlockStatus.ACTION_REQUIRED -> Triple("Action Required", MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f), MaterialTheme.colorScheme.onErrorContainer)
+        BlockStatus.USER_CONFIRMED_BLOCKED -> Triple("User Confirmed Blocked", MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.onPrimaryContainer)
         BlockStatus.BLOCKED_CONFIRMED, BlockStatus.BLOCKED_BY_APP -> Triple("Blocked (Confirmed)", MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.onPrimaryContainer)
+        BlockStatus.USER_CONFIRMED_UNBLOCKED -> Triple("User Confirmed Unblocked", MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer)
         BlockStatus.UNBLOCKED_CONFIRMED -> Triple("Unblocked (Confirmed)", MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer)
         BlockStatus.MANUALLY_BLOCKED_EXTERNAL -> Triple("Manual (External)", MaterialTheme.colorScheme.tertiaryContainer, MaterialTheme.colorScheme.onTertiaryContainer)
         BlockStatus.FAILED -> Triple("Failed", MaterialTheme.colorScheme.errorContainer, MaterialTheme.colorScheme.onErrorContainer)
@@ -860,7 +971,7 @@ fun PickerContactItem(
     }
 }
 
-// Step 3: Confirmation Dialogs
+// Confirmation Dialogs
 
 @Composable
 fun ConfirmBlockDialog(
@@ -873,11 +984,11 @@ fun ConfirmBlockDialog(
         title = { Text("Confirm Block Selected (${selectedContacts.size})") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("You are initiating focus block for the following contacts:")
+                Text("You are preparing to block the following contacts for this focus session:")
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(120.dp),
+                        .height(110.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     items(selectedContacts) { contact ->
@@ -885,7 +996,7 @@ fun ConfirmBlockDialog(
                     }
                 }
                 Text(
-                    text = "Technical Reality: Real WhatsApp blocking automation is not configured. Contacts will transition to 'Action Required' and be logged in your local audit history. They will not be falsely labeled as Blocked Confirmed.",
+                    text = "Honest Disclosure: WhatsApp does not allow third-party apps to block contacts directly. This app will launch each contact's chat and guide you through blocking. Contacts will only be marked as 'User Confirmed' after you confirm.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary
                 )
@@ -893,7 +1004,7 @@ fun ConfirmBlockDialog(
         },
         confirmButton = {
             Button(onClick = onConfirm) {
-                Text("Proceed")
+                Text("Start Guided Blocking")
             }
         },
         dismissButton = {
@@ -915,11 +1026,11 @@ fun ConfirmUnblockDialog(
         title = { Text("Confirm Unblock All (${eligibleContacts.size})") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("This action will revert only blocks that this app successfully confirmed:")
+                Text("This action will guide you through unblocking only the contacts you confirmed blocking through this app:")
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(120.dp),
+                        .height(110.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     items(eligibleContacts) { contact ->
@@ -927,7 +1038,7 @@ fun ConfirmUnblockDialog(
                     }
                 }
                 Text(
-                    text = "Safety Rule: Contacts you blocked manually prior to this session will never be unblocked.",
+                    text = "Safety Guarantee: Contacts in 'Action Required' or blocked prior to this session are never included.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -935,7 +1046,7 @@ fun ConfirmUnblockDialog(
         },
         confirmButton = {
             Button(onClick = onConfirm) {
-                Text("Proceed")
+                Text("Start Guided Unblocking")
             }
         },
         dismissButton = {
@@ -945,6 +1056,134 @@ fun ConfirmUnblockDialog(
         }
     )
 }
+
+// Step-by-Step Guided Assistant Dialogs
+
+@Composable
+fun AssistedBlockGuideDialog(
+    contact: FocusContact,
+    onOpenWhatsApp: () -> Unit,
+    onConfirmBlocked: () -> Unit,
+    onSkip: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Guide: Block ${contact.name}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Contact: ${contact.name} (${contact.phoneNumber})",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Text(
+                    text = "Step 1: Tap below to open this conversation in WhatsApp.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Button(
+                    onClick = onOpenWhatsApp,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("1. Open in WhatsApp")
+                }
+
+                Text(
+                    text = "Step 2: In WhatsApp, tap the 3 dots (⋮) in the top-right ➔ More ➔ Block.",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium
+                )
+
+                Text(
+                    text = "Step 3: After completing the block in WhatsApp, return here and tap confirm below.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                ) {
+                    Text(
+                        text = "Notice: Opening WhatsApp chat does not automatically block. You must manually tap Block in WhatsApp.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(8.dp)
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onConfirmBlocked) {
+                Text("I Have Blocked This Contact")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onSkip) {
+                Text("Skip / Cancel")
+            }
+        }
+    )
+}
+
+@Composable
+fun AssistedUnblockGuideDialog(
+    contact: FocusContact,
+    onOpenWhatsApp: () -> Unit,
+    onConfirmUnblocked: () -> Unit,
+    onSkip: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Guide: Unblock ${contact.name}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Contact: ${contact.name} (${contact.phoneNumber})",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Text(
+                    text = "Step 1: Tap below to open this conversation in WhatsApp.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Button(
+                    onClick = onOpenWhatsApp,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("1. Open in WhatsApp")
+                }
+
+                Text(
+                    text = "Step 2: In WhatsApp, tap the unblock banner or 3 dots (⋮) ➔ More ➔ Unblock.",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium
+                )
+
+                Text(
+                    text = "Step 3: Return here and tap confirm.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = onConfirmUnblocked) {
+                Text("I Have Unblocked This Contact")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onSkip) {
+                Text("Skip")
+            }
+        }
+    )
+}
+
+// Audit History Dialog
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1043,7 +1282,10 @@ fun MainScreenPreview() {
             onSelectContacts = {},
             onBlockSelected = {},
             onUnblockAll = {},
-            onToggleContact = { _, _ -> }
+            onToggleContact = { _, _ -> },
+            onStartGuidedBlock = {},
+            onStartGuidedUnblock = {},
+            onDeleteContact = {}
         )
     }
 }

@@ -6,7 +6,7 @@ import kotlinx.serialization.Serializable
  * Explicit states representing contact status and action tracking.
  *
  * CRITICAL SAFETY INVARIANT:
- * "Unblock All" must ONLY target contacts with status [BLOCKED_CONFIRMED] or [BLOCKED_BY_APP].
+ * "Unblock All" must ONLY target contacts with status [USER_CONFIRMED_BLOCKED], [BLOCKED_CONFIRMED], or [BLOCKED_BY_APP].
  * Contacts in [ACTION_REQUIRED], [MANUALLY_BLOCKED_EXTERNAL], [FAILED], or [UNBLOCKED] must NEVER be unblocked.
  */
 @Serializable
@@ -20,21 +20,27 @@ enum class BlockStatus {
     /** Action is currently pending or queued. */
     PENDING,
 
-    /** Integration not configured; real WhatsApp blocking action required. */
+    /** Action required: User must manually complete the action in WhatsApp. */
     ACTION_REQUIRED,
 
-    /** Contact was confirmed blocked through this app. Eligible for "Unblock All". */
+    /** User explicitly confirmed that they manually blocked this contact in WhatsApp through this app. Eligible for Unblock All. */
+    USER_CONFIRMED_BLOCKED,
+
+    /** Contact was confirmed blocked through this app. Eligible for Unblock All. */
     BLOCKED_CONFIRMED,
 
-    /** Backward-compatible alias for BLOCKED_CONFIRMED. */
+    /** Backward-compatible alias for confirmed app blocks. */
     BLOCKED_BY_APP,
+
+    /** User explicitly confirmed that they manually unblocked this contact in WhatsApp through this app. */
+    USER_CONFIRMED_UNBLOCKED,
 
     /** Contact was confirmed unblocked through this app. */
     UNBLOCKED_CONFIRMED,
 
-    /** Contact was manually blocked outside of this app. Must NEVER be unblocked automatically. */
+    /** Contact was manually blocked outside of this app prior to the session. Must NEVER be unblocked automatically. */
     MANUALLY_BLOCKED_EXTERNAL,
 
-    /** Attempted action failed or could not be verified. */
+    /** Attempted action failed, was cancelled, or could not be verified. */
     FAILED
 }

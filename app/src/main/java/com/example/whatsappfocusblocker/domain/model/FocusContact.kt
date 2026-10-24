@@ -24,12 +24,14 @@ data class FocusContact(
     val lastActionMessage: String? = null
 ) {
     /**
-     * Invariant: Only contacts that were genuinely verified as blocked by this application
+     * Invariant: Only contacts that were genuinely confirmed as blocked through this application
      * can be unblocked by automated focus restoration.
      * Never unblock contacts in ACTION_REQUIRED, MANUALLY_BLOCKED_EXTERNAL, or FAILED.
      */
     fun canBeUnblockedByApp(): Boolean {
-        return status == BlockStatus.BLOCKED_CONFIRMED || status == BlockStatus.BLOCKED_BY_APP
+        return status == BlockStatus.USER_CONFIRMED_BLOCKED ||
+                status == BlockStatus.BLOCKED_CONFIRMED ||
+                status == BlockStatus.BLOCKED_BY_APP
     }
 
     /**
@@ -39,6 +41,7 @@ data class FocusContact(
         return status == BlockStatus.UNBLOCKED ||
                 status == BlockStatus.SELECTED ||
                 status == BlockStatus.ACTION_REQUIRED ||
+                status == BlockStatus.USER_CONFIRMED_UNBLOCKED ||
                 status == BlockStatus.UNBLOCKED_CONFIRMED ||
                 status == BlockStatus.FAILED
     }
