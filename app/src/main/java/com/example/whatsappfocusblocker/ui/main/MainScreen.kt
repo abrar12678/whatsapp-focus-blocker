@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -393,7 +394,7 @@ fun MainContent(
                 EmptyContactsCard(onSelectContacts = onSelectContacts)
             }
         } else {
-            items(uiState.contacts, key = { it.id }) { contact ->
+            itemsIndexed(uiState.contacts, key = { index, contact -> "${contact.id}_${contact.phoneNumber}_$index" }) { _, contact ->
                 ContactListItem(
                     contact = contact,
                     onToggleSelect = { isChecked -> onToggleContact(contact.id, isChecked) },
@@ -890,7 +891,10 @@ fun ContactPickerBottomSheet(
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        items(uiState.filteredDeviceContacts, key = { it.id }) { devContact ->
+                        itemsIndexed(
+                            items = uiState.filteredDeviceContacts,
+                            key = { index, devContact -> "${devContact.id}_${devContact.phoneNumber}_$index" }
+                        ) { _, devContact ->
                             val isSelected = uiState.pickerSelectedIds.contains(devContact.id)
                             PickerContactItem(
                                 contact = devContact,
@@ -1220,7 +1224,7 @@ fun AuditHistoryDialog(
                         .height(300.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(auditLogs, key = { it.id }) { log ->
+                    itemsIndexed(auditLogs, key = { index, log -> "${log.id}_$index" }) { _, log ->
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(
