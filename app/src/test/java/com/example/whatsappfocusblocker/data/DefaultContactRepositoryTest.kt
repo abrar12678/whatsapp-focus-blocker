@@ -1,6 +1,8 @@
 package com.example.whatsappfocusblocker.data
 
 import android.content.SharedPreferences
+import com.example.whatsappfocusblocker.domain.model.ActionAuditRecord
+import com.example.whatsappfocusblocker.domain.model.ActionType
 import com.example.whatsappfocusblocker.domain.model.BlockStatus
 import com.example.whatsappfocusblocker.domain.model.FocusContact
 import junit.framework.TestCase.assertEquals
@@ -28,7 +30,7 @@ class DefaultContactRepositoryTest {
 
         assertEquals(1, repo1.getSavedContacts().first().size)
 
-        // Instantiate new repository instance with same SharedPreferences (simulating app restart)
+        // Simulate app restart
         val repo2 = DefaultContactRepository(fakePrefs)
         val restored = repo2.getSavedContacts().first()
 
@@ -36,6 +38,38 @@ class DefaultContactRepositoryTest {
         assertEquals("Alice", restored.first().name)
         assertEquals("+1234567890", restored.first().phoneNumber)
         assertTrue(restored.first().isSelected)
+    }
+
+    @Test
+    fun auditLogs_persistAcrossAppRestarts() = runTest {
+        val fakePrefs = FakeSharedPreferences()
+        val repo1 = DefaultContactRepository(fakePrefs)
+
+        val log = ActionAuditRecord(
+            id = "log-1",
+            timestamp = 1700000000L,
+            actionType = ActionType.INTEGRATION_UNAVAILABLE,
+            contactId = "c1",
+            contactName = "Alice",
+            phoneNumber = "+12345",
+            previousStatus = BlockStatus.PENDING,
+            newStatus = BlockStatus.ACTION_REQUIRED,
+            details = "WhatsApp integration not configured",
+            isVerified = false
+        )
+        repo1.recordAuditLog(log)
+
+        assertEquals(1, repo1.getActionAuditHistory().first().size)
+
+        // Instantiate new repository to simulate restart
+        val repo2 = DefaultContactRepository(fakePrefs)
+        val restoredLogs = repo2.getActionAuditHistory().first()
+
+        assertEquals(1, restoredLogs.size)
+        assertEquals("log-1", restoredLogs.first().id)
+        assertEquals(ActionType.INTEGRATION_UNAVAILABLE, restoredLogs.first().actionType)
+        assertEquals(BlockStatus.ACTION_REQUIRED, restoredLogs.first().newStatus)
+        assertFalse(restoredLogs.first().isVerified)
     }
 
     @Test
@@ -56,9 +90,31 @@ class DefaultContactRepositoryTest {
         val updated = repo.getSavedContacts().first()
         assertTrue(updated.first().isSelected)
 
-        // Verify reloaded instance also sees selection
         val reloaded = DefaultContactRepository(fakePrefs).getSavedContacts().first()
         assertTrue(reloaded.first().isSelected)
+    }
+
+    @Test
+    fun updateContactStatus_updatesAndPersists() = runTest {
+        val fakePrefs = FakeSharedPreferences()
+        val repo = DefaultContactRepository(fakePrefs)
+
+        val contact = FocusContact(id = "c1", name = "Dan", phoneNumber = "+222", status = BlockStatus.UNBLOCKED)
+        repo.saveContacts(listOf(contact))
+
+        repo.updateContactStatus(
+            contactId = "c1",
+            newStatus = BlockStatus.ACTION_REQUIRED,
+            blockedByAppTimestamp = null,
+            message = "Manual action required"
+        )
+
+        val updated = repo.getSavedContacts().first()
+        assertEquals(BlockStatus.ACTION_REQUIRED, updated.first().status)
+        assertEquals("Manual action required", updated.first().lastActionMessage)
+
+        val reloaded = DefaultContactRepository(fakePrefs).getSavedContacts().first()
+        assertEquals(BlockStatus.ACTION_REQUIRED, reloaded.first().status)
     }
 
     @Test
@@ -73,7 +129,6 @@ class DefaultContactRepositoryTest {
         repo.deleteContact("c1")
         assertEquals(0, repo.getSavedContacts().first().size)
 
-        // Verify across restart
         val reloaded = DefaultContactRepository(fakePrefs).getSavedContacts().first()
         assertTrue(reloaded.isEmpty())
     }

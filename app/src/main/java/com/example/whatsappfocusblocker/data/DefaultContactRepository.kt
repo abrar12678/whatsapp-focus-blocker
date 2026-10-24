@@ -1,6 +1,7 @@
 package com.example.whatsappfocusblocker.data
 
 import android.content.SharedPreferences
+import com.example.whatsappfocusblocker.domain.model.ActionAuditRecord
 import com.example.whatsappfocusblocker.domain.model.BlockStatus
 import com.example.whatsappfocusblocker.domain.model.FocusContact
 import com.example.whatsappfocusblocker.domain.repository.ContactRepository
@@ -12,7 +13,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 /**
- * Repository implementation supporting local persistence across app restarts.
+ * Repository implementation supporting local persistence of contacts and action audit records across app restarts.
  *
  * Stored locally in app private preferences. Never uploaded to any external server.
  */
@@ -23,12 +24,15 @@ class DefaultContactRepository(
     companion object {
         const val PREFS_NAME = "whatsapp_focus_blocker_prefs"
         private const val KEY_SAVED_CONTACTS = "key_saved_focus_contacts"
+        private const val KEY_AUDIT_LOGS = "key_action_audit_history"
+        private const val MAX_AUDIT_ENTRIES = 100
     }
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
-    private val _contactsFlow = MutableStateFlow<List<FocusContact>>(loadFromPreferences())
+    private val _contactsFlow = MutableStateFlow<List<FocusContact>>(loadContactsFromPreferences())
+    private val _auditLogsFlow = MutableStateFlow<List<ActionAuditRecord>>(loadAuditLogsFromPreferences())
 
-    private fun loadFromPreferences(): List<FocusContact> {
+    private fun loadContactsFromPreferences(): List<FocusContact> {
         val raw = preferences?.getString(KEY_SAVED_CONTACTS, null) ?: return emptyList()
         return try {
             json.decodeFromString<List<FocusContact>>(raw)
@@ -37,11 +41,31 @@ class DefaultContactRepository(
         }
     }
 
-    private fun persist(list: List<FocusContact>) {
+    private fun loadAuditLogsFromPreferences(): List<ActionAuditRecord> {
+        val raw = preferences?.getString(KEY_AUDIT_LOGS, null) ?: return emptyList()
+        return try {
+            json.decodeFromString<List<ActionAuditRecord>>(raw)
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun persistContacts(list: List<FocusContact>) {
         preferences?.edit()?.let { editor ->
             try {
                 val serialized = json.encodeToString(list)
                 editor.putString(KEY_SAVED_CONTACTS, serialized).apply()
+            } catch (e: Exception) {
+                // Graceful fallback
+            }
+        }
+    }
+
+    private fun persistAuditLogs(list: List<ActionAuditRecord>) {
+        preferences?.edit()?.let { editor ->
+            try {
+                val serialized = json.encodeToString(list)
+                editor.putString(KEY_AUDIT_LOGS, serialized).apply()
             } catch (e: Exception) {
                 // Graceful fallback
             }
@@ -55,7 +79,6 @@ class DefaultContactRepository(
     override suspend fun saveContacts(contacts: List<FocusContact>) {
         _contactsFlow.update { current ->
             val existingMap = current.associateBy { it.id }
-            // Merge preserving existing block statuses and timestamps
             val merged = contacts.map { incoming ->
                 val existing = existingMap[incoming.id]
                 if (existing != null) {
@@ -68,7 +91,7 @@ class DefaultContactRepository(
                     incoming
                 }
             }
-            persist(merged)
+            persistContacts(merged)
             merged
         }
     }
@@ -82,7 +105,7 @@ class DefaultContactRepository(
                     contact
                 }
             }
-            persist(updated)
+            persistContacts(updated)
             updated
         }
     }
@@ -90,7 +113,7 @@ class DefaultContactRepository(
     override suspend fun setSelectAll(selectAll: Boolean) {
         _contactsFlow.update { list ->
             val updated = list.map { it.copy(isSelected = selectAll) }
-            persist(updated)
+            persistContacts(updated)
             updated
         }
     }
@@ -113,7 +136,7 @@ class DefaultContactRepository(
                     contact
                 }
             }
-            persist(updated)
+            persistContacts(updated)
             updated
         }
     }
@@ -121,8 +144,27 @@ class DefaultContactRepository(
     override suspend fun deleteContact(contactId: String) {
         _contactsFlow.update { list ->
             val updated = list.filterNot { it.id == contactId }
-            persist(updated)
+            persistContacts(updated)
             updated
+        }
+    }
+
+    override fun getActionAuditHistory(): Flow<List<ActionAuditRecord>> {
+        return _auditLogsFlow.asStateFlow()
+    }
+
+    override suspend fun recordAuditLog(record: ActionAuditRecord) {
+        _auditLogsFlow.update { current ->
+            val updated = (listOf(record) + current).take(MAX_AUDIT_ENTRIES)
+            persistAuditLogs(updated)
+            updated
+        }
+    }
+
+    override suspend fun clearAuditHistory() {
+        _auditLogsFlow.update {
+            persistAuditLogs(emptyList())
+            emptyList()
         }
     }
 }

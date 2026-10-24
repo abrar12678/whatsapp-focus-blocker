@@ -1,5 +1,6 @@
 package com.example.whatsappfocusblocker.domain.repository
 
+import com.example.whatsappfocusblocker.domain.model.ActionAuditRecord
 import com.example.whatsappfocusblocker.domain.model.BlockStatus
 import com.example.whatsappfocusblocker.domain.model.FocusContact
 import kotlinx.coroutines.flow.Flow
@@ -39,4 +40,19 @@ interface ContactRepository {
      * Remove a contact from the focus list.
      */
     suspend fun deleteContact(contactId: String)
+
+    /**
+     * Flow emitting locally persisted audit records of all block/unblock actions.
+     */
+    fun getActionAuditHistory(): Flow<List<ActionAuditRecord>>
+
+    /**
+     * Record a new immutable action audit entry.
+     */
+    suspend fun recordAuditLog(record: ActionAuditRecord)
+
+    /**
+     * Clear all recorded audit history.
+     */
+    suspend fun clearAuditHistory()
 }

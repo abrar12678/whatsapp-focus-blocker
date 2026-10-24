@@ -73,9 +73,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.whatsappfocusblocker.data.DefaultContactRepository
 import com.example.whatsappfocusblocker.data.contacts.AndroidDeviceContactsDataSource
 import com.example.whatsappfocusblocker.data.contacts.DeviceContact
+import com.example.whatsappfocusblocker.domain.model.ActionAuditRecord
 import com.example.whatsappfocusblocker.domain.model.BlockStatus
 import com.example.whatsappfocusblocker.domain.model.FocusContact
 import com.example.whatsappfocusblocker.theme.WhatsAppFocusBlockerTheme
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -119,7 +123,12 @@ fun MainScreen(
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        topBar = { AppHeader() },
+        topBar = {
+            AppHeader(
+                onViewAuditHistory = viewModel::onOpenAuditHistory,
+                auditRecordCount = uiState.auditLogs.size
+            )
+        },
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
     ) { innerPadding ->
         MainContent(
@@ -141,6 +150,33 @@ fun MainScreen(
             onSelectAll = viewModel::onSelectAllPickerContacts,
             onConfirm = viewModel::onConfirmContactSelection,
             onDismiss = viewModel::onDismissPicker
+        )
+    }
+
+    // Step 3: Confirm Block Selected Dialog
+    if (uiState.showConfirmBlockDialog) {
+        ConfirmBlockDialog(
+            selectedContacts = uiState.selectedContacts,
+            onConfirm = viewModel::executeBlockSelected,
+            onDismiss = viewModel::onDismissConfirmBlockDialog
+        )
+    }
+
+    // Step 3: Confirm Unblock All Dialog
+    if (uiState.showConfirmUnblockDialog) {
+        ConfirmUnblockDialog(
+            eligibleContacts = uiState.unblockEligibleContacts,
+            onConfirm = viewModel::executeUnblockAll,
+            onDismiss = viewModel::onDismissConfirmUnblockDialog
+        )
+    }
+
+    // Step 3: Audit History Dialog
+    if (uiState.showAuditHistoryDialog) {
+        AuditHistoryDialog(
+            auditLogs = uiState.auditLogs,
+            onClear = viewModel::onClearAuditHistory,
+            onDismiss = viewModel::onDismissAuditHistory
         )
     }
 
@@ -216,7 +252,10 @@ private fun createDefaultViewModel(context: Context): MainScreenViewModel {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AppHeader() {
+fun AppHeader(
+    onViewAuditHistory: () -> Unit,
+    auditRecordCount: Int
+) {
     TopAppBar(
         title = {
             Column {
@@ -230,6 +269,11 @@ fun AppHeader() {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+        },
+        actions = {
+            TextButton(onClick = onViewAuditHistory) {
+                Text("Audit Log ($auditRecordCount)")
             }
         },
         colors = TopAppBarDefaults.topAppBarColors(
@@ -259,7 +303,8 @@ fun MainContent(
                 isFocusActive = uiState.isFocusActive,
                 totalContacts = uiState.totalCount,
                 selectedContacts = uiState.selectedCount,
-                blockedByAppCount = uiState.blockedByAppCount
+                blockedByAppCount = uiState.blockedByAppCount,
+                actionRequiredCount = uiState.actionRequiredCount
             )
         }
 
@@ -308,6 +353,7 @@ fun FocusStatusCard(
     totalContacts: Int,
     selectedContacts: Int,
     blockedByAppCount: Int,
+    actionRequiredCount: Int,
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -343,6 +389,7 @@ fun FocusStatusCard(
                 StatusMetricItem(label = "Saved", value = totalContacts.toString())
                 StatusMetricItem(label = "Selected", value = selectedContacts.toString())
                 StatusMetricItem(label = "App Blocked", value = blockedByAppCount.toString())
+                StatusMetricItem(label = "Action Req.", value = actionRequiredCount.toString())
             }
         }
     }
@@ -411,14 +458,14 @@ fun TechnicalNoticeCard(modifier: Modifier = Modifier) {
             Spacer(modifier = Modifier.width(10.dp))
             Column {
                 Text(
-                    text = "Notice: Real Blocking Not Yet Connected",
+                    text = "Notice: Action Tracking & Safety Mode",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Real WhatsApp blocking is not yet implemented. Contacts selected here are stored strictly on your device. We will investigate user-consented automation in Step 5 without faking success.",
+                    text = "WhatsApp has no official third-party blocking API. Every action attempt is logged in your local audit history. Contacts are never labeled 'Blocked Confirmed' until an actual block is verified.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -474,7 +521,6 @@ fun ActionControlsCard(
 
                 OutlinedButton(
                     onClick = onUnblockAll,
-                    enabled = blockedByAppCount > 0,
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.outlinedButtonColors(
@@ -592,7 +638,15 @@ fun ContactListItem(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                contact.lastActionMessage?.let { msg ->
+                    Text(
+                        text = msg,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                    )
+                }
             }
+            Spacer(modifier = Modifier.width(8.dp))
             ContactStatusBadge(status = contact.status)
         }
     }
@@ -602,9 +656,12 @@ fun ContactListItem(
 fun ContactStatusBadge(status: BlockStatus) {
     val (label, bgColor, textColor) = when (status) {
         BlockStatus.UNBLOCKED -> Triple("Unblocked", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant)
-        BlockStatus.BLOCKED_BY_APP -> Triple("Blocked (App)", MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.onPrimaryContainer)
+        BlockStatus.SELECTED -> Triple("Selected", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant)
+        BlockStatus.PENDING -> Triple("Pending", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant)
+        BlockStatus.ACTION_REQUIRED -> Triple("Action Required", MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f), MaterialTheme.colorScheme.onErrorContainer)
+        BlockStatus.BLOCKED_CONFIRMED, BlockStatus.BLOCKED_BY_APP -> Triple("Blocked (Confirmed)", MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.onPrimaryContainer)
+        BlockStatus.UNBLOCKED_CONFIRMED -> Triple("Unblocked (Confirmed)", MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer)
         BlockStatus.MANUALLY_BLOCKED_EXTERNAL -> Triple("Manual (External)", MaterialTheme.colorScheme.tertiaryContainer, MaterialTheme.colorScheme.onTertiaryContainer)
-        BlockStatus.PENDING_BLOCK, BlockStatus.PENDING_UNBLOCK -> Triple("Pending", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant)
         BlockStatus.FAILED -> Triple("Failed", MaterialTheme.colorScheme.errorContainer, MaterialTheme.colorScheme.onErrorContainer)
     }
 
@@ -615,8 +672,9 @@ fun ContactStatusBadge(status: BlockStatus) {
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Medium,
             color = textColor,
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
         )
     }
 }
@@ -643,7 +701,6 @@ fun ContactPickerBottomSheet(
                 .fillMaxHeight(0.85f)
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
-            // Header
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -661,7 +718,6 @@ fun ContactPickerBottomSheet(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Search Bar
             OutlinedTextField(
                 value = uiState.searchQuery,
                 onValueChange = onSearchChange,
@@ -673,7 +729,6 @@ fun ContactPickerBottomSheet(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Bulk action bar
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -695,7 +750,6 @@ fun ContactPickerBottomSheet(
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // Contact List or Loading or Empty
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -739,7 +793,6 @@ fun ContactPickerBottomSheet(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Bottom Actions Bar
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -805,6 +858,180 @@ fun PickerContactItem(
             }
         }
     }
+}
+
+// Step 3: Confirmation Dialogs
+
+@Composable
+fun ConfirmBlockDialog(
+    selectedContacts: List<FocusContact>,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Confirm Block Selected (${selectedContacts.size})") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("You are initiating focus block for the following contacts:")
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(120.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(selectedContacts) { contact ->
+                        Text("• ${contact.name} (${contact.phoneNumber})", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                Text(
+                    text = "Technical Reality: Real WhatsApp blocking automation is not configured. Contacts will transition to 'Action Required' and be logged in your local audit history. They will not be falsely labeled as Blocked Confirmed.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = onConfirm) {
+                Text("Proceed")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+@Composable
+fun ConfirmUnblockDialog(
+    eligibleContacts: List<FocusContact>,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Confirm Unblock All (${eligibleContacts.size})") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("This action will revert only blocks that this app successfully confirmed:")
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(120.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(eligibleContacts) { contact ->
+                        Text("• ${contact.name} (${contact.phoneNumber})", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                Text(
+                    text = "Safety Rule: Contacts you blocked manually prior to this session will never be unblocked.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = onConfirm) {
+                Text("Proceed")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AuditHistoryDialog(
+    auditLogs: List<ActionAuditRecord>,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val dateFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Action Audit History")
+                if (auditLogs.isNotEmpty()) {
+                    TextButton(onClick = onClear) {
+                        Text("Clear", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        },
+        text = {
+            if (auditLogs.isEmpty()) {
+                Text("No actions recorded yet. Every block and unblock attempt will be logged here.")
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(300.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(auditLogs, key = { it.id }) { log ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                            )
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = log.actionType.name,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Text(
+                                        text = dateFormat.format(Date(log.timestamp)),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Text(
+                                    text = "${log.contactName} (${log.phoneNumber})",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = "${log.previousStatus} ➔ ${log.newStatus}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = log.details,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
+    )
 }
 
 @Preview(showBackground = true)

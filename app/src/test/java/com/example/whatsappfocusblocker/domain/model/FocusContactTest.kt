@@ -7,17 +7,37 @@ import org.junit.Test
 class FocusContactTest {
 
     @Test
-    fun canBeUnblockedByApp_returnsTrue_onlyWhenStatusIsBlockedByApp() {
-        val appBlockedContact = FocusContact(
+    fun canBeUnblockedByApp_returnsTrue_onlyForConfirmedAppBlocks() {
+        val confirmedBlocked = FocusContact(
             id = "+1234567890",
             name = "Test User",
             phoneNumber = "+1234567890",
-            status = BlockStatus.BLOCKED_BY_APP,
+            status = BlockStatus.BLOCKED_CONFIRMED,
             blockedByAppTimestamp = System.currentTimeMillis()
         )
         assertTrue(
-            "Contact blocked by this app must be eligible for unblocking",
-            appBlockedContact.canBeUnblockedByApp()
+            "Contact confirmed blocked by this app must be eligible for unblocking",
+            confirmedBlocked.canBeUnblockedByApp()
+        )
+
+        val appBlocked = FocusContact(
+            id = "+1234567891",
+            name = "Test User 2",
+            phoneNumber = "+1234567891",
+            status = BlockStatus.BLOCKED_BY_APP,
+            blockedByAppTimestamp = System.currentTimeMillis()
+        )
+        assertTrue(appBlocked.canBeUnblockedByApp())
+
+        val actionRequired = FocusContact(
+            id = "+1234567892",
+            name = "Unverified User",
+            phoneNumber = "+1234567892",
+            status = BlockStatus.ACTION_REQUIRED
+        )
+        assertFalse(
+            "Contact in ACTION_REQUIRED must never be considered verified or unblockable by app",
+            actionRequired.canBeUnblockedByApp()
         )
 
         val manuallyBlockedContact = FocusContact(
@@ -37,10 +57,7 @@ class FocusContactTest {
             phoneNumber = "+1122334455",
             status = BlockStatus.UNBLOCKED
         )
-        assertFalse(
-            "Already unblocked contact should not be eligible for unblocking",
-            unblockedContact.canBeUnblockedByApp()
-        )
+        assertFalse(unblockedContact.canBeUnblockedByApp())
 
         val failedContact = FocusContact(
             id = "+5566778899",
@@ -48,22 +65,31 @@ class FocusContactTest {
             phoneNumber = "+5566778899",
             status = BlockStatus.FAILED
         )
-        assertFalse(
-            "Contact with failed action must not be unblocked automatically",
-            failedContact.canBeUnblockedByApp()
+        assertFalse(failedContact.canBeUnblockedByApp())
+
+        val pendingContact = FocusContact(
+            id = "+6677889900",
+            name = "Pending User",
+            phoneNumber = "+6677889900",
+            status = BlockStatus.PENDING
         )
+        assertFalse(pendingContact.canBeUnblockedByApp())
     }
 
     @Test
-    fun canBeBlockedForFocus_returnsTrue_onlyForUnblockedOrFailed() {
+    fun canBeBlockedForFocus_returnsTrue_onlyWhenNotAlreadyBlocked() {
         val unblocked = FocusContact(id = "1", name = "A", phoneNumber = "1", status = BlockStatus.UNBLOCKED)
-        val failed = FocusContact(id = "2", name = "B", phoneNumber = "2", status = BlockStatus.FAILED)
-        val alreadyBlockedByApp = FocusContact(id = "3", name = "C", phoneNumber = "3", status = BlockStatus.BLOCKED_BY_APP)
-        val manuallyBlocked = FocusContact(id = "4", name = "D", phoneNumber = "4", status = BlockStatus.MANUALLY_BLOCKED_EXTERNAL)
+        val selected = FocusContact(id = "2", name = "B", phoneNumber = "2", status = BlockStatus.SELECTED)
+        val actionRequired = FocusContact(id = "3", name = "C", phoneNumber = "3", status = BlockStatus.ACTION_REQUIRED)
+        val failed = FocusContact(id = "4", name = "D", phoneNumber = "4", status = BlockStatus.FAILED)
+        val confirmedBlocked = FocusContact(id = "5", name = "E", phoneNumber = "5", status = BlockStatus.BLOCKED_CONFIRMED)
+        val manuallyBlocked = FocusContact(id = "6", name = "F", phoneNumber = "6", status = BlockStatus.MANUALLY_BLOCKED_EXTERNAL)
 
         assertTrue(unblocked.canBeBlockedForFocus())
+        assertTrue(selected.canBeBlockedForFocus())
+        assertTrue(actionRequired.canBeBlockedForFocus())
         assertTrue(failed.canBeBlockedForFocus())
-        assertFalse(alreadyBlockedByApp.canBeBlockedForFocus())
+        assertFalse(confirmedBlocked.canBeBlockedForFocus())
         assertFalse(manuallyBlocked.canBeBlockedForFocus())
     }
 }
