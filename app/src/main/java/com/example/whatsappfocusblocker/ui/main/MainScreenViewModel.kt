@@ -42,7 +42,11 @@ data class FocusUiState(
 
     // Permission Dialog State
     val showPermissionRationale: Boolean = false,
-    val showPermanentlyDeniedDialog: Boolean = false
+    val showPermanentlyDeniedDialog: Boolean = false,
+
+    // Accessibility Service State (Phase 1 PoC)
+    val isAccessibilityEnabled: Boolean = false,
+    val showAccessibilityOnboarding: Boolean = false
 ) {
     val selectedCount: Int
         get() = contacts.count { it.isSelected }
@@ -105,6 +109,10 @@ class MainScreenViewModel(
     private val _showPermissionRationale = MutableStateFlow(false)
     private val _showPermanentlyDeniedDialog = MutableStateFlow(false)
 
+    // Accessibility Service flows (Phase 1 PoC)
+    private val _isAccessibilityEnabled = MutableStateFlow(false)
+    private val _showAccessibilityOnboarding = MutableStateFlow(false)
+
     val uiState: StateFlow<FocusUiState> = combine(
         contactRepository.getSavedContacts(),
         contactRepository.getActionAuditHistory(),
@@ -122,7 +130,9 @@ class MainScreenViewModel(
         _activeGuidedBlockContact,
         _activeGuidedUnblockContact,
         _showPermissionRationale,
-        _showPermanentlyDeniedDialog
+        _showPermanentlyDeniedDialog,
+        _isAccessibilityEnabled,
+        _showAccessibilityOnboarding
     ) { args: Array<Any?> ->
         @Suppress("UNCHECKED_CAST")
         FocusUiState(
@@ -142,13 +152,27 @@ class MainScreenViewModel(
             activeGuidedBlockContact = args[13] as FocusContact?,
             activeGuidedUnblockContact = args[14] as FocusContact?,
             showPermissionRationale = args[15] as Boolean,
-            showPermanentlyDeniedDialog = args[16] as Boolean
+            showPermanentlyDeniedDialog = args[16] as Boolean,
+            isAccessibilityEnabled = args[17] as Boolean,
+            showAccessibilityOnboarding = args[18] as Boolean
         )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = FocusUiState()
     )
+
+    fun updateAccessibilityEnabled(enabled: Boolean) {
+        _isAccessibilityEnabled.value = enabled
+    }
+
+    fun onOpenAccessibilityOnboarding() {
+        _showAccessibilityOnboarding.value = true
+    }
+
+    fun onDismissAccessibilityOnboarding() {
+        _showAccessibilityOnboarding.value = false
+    }
 
     fun onSelectContactsClicked(hasPermission: Boolean) {
         if (hasPermission) {

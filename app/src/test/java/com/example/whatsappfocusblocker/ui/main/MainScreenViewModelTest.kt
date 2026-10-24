@@ -212,6 +212,41 @@ class MainScreenViewModelTest {
 
         assertEquals(0, viewModel.uiState.value.totalCount)
     }
+
+    @Test
+    fun accessibilityState_updatesAndReflectsInUiState() = runTest {
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            viewModel.uiState.collect {}
+        }
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.isAccessibilityEnabled)
+
+        viewModel.updateAccessibilityEnabled(true)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.uiState.value.isAccessibilityEnabled)
+    }
+
+    @Test
+    fun accessibilityOnboarding_opensAndDismissesCorrectly() = runTest {
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            viewModel.uiState.collect {}
+        }
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.showAccessibilityOnboarding)
+
+        viewModel.onOpenAccessibilityOnboarding()
+        advanceUntilIdle()
+
+        assertTrue(viewModel.uiState.value.showAccessibilityOnboarding)
+
+        viewModel.onDismissAccessibilityOnboarding()
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.showAccessibilityOnboarding)
+    }
 }
 
 private class FakeDeviceContactsDataSource : DeviceContactsDataSource {

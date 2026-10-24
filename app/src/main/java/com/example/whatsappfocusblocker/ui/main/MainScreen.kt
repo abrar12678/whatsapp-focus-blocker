@@ -77,6 +77,11 @@ import com.example.whatsappfocusblocker.data.contacts.DeviceContact
 import com.example.whatsappfocusblocker.domain.model.ActionAuditRecord
 import com.example.whatsappfocusblocker.domain.model.BlockStatus
 import com.example.whatsappfocusblocker.domain.model.FocusContact
+import androidx.compose.runtime.DisposableEffect
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.whatsappfocusblocker.accessibility.AccessibilityServiceHelper
 import com.example.whatsappfocusblocker.theme.WhatsAppFocusBlockerTheme
 import com.example.whatsappfocusblocker.util.WhatsAppLaunchResult
 import com.example.whatsappfocusblocker.util.WhatsAppLauncher
@@ -94,6 +99,19 @@ fun MainScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
     val activity = context as? Activity
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.updateAccessibilityEnabled(AccessibilityServiceHelper.isAccessibilityServiceEnabled(context))
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -143,6 +161,7 @@ fun MainScreen(
             onStartGuidedBlock = viewModel::startGuidedBlockForContact,
             onStartGuidedUnblock = viewModel::startGuidedUnblockForContact,
             onDeleteContact = viewModel::onDeleteContact,
+            onOpenAccessibilityOnboarding = viewModel::onOpenAccessibilityOnboarding,
             modifier = Modifier.padding(innerPadding)
         )
     }
@@ -266,6 +285,25 @@ fun MainScreen(
             }
         )
     }
+
+    // Accessibility Onboarding & Setup Dialog (Phase 1 PoC)
+    if (uiState.showAccessibilityOnboarding) {
+        AccessibilityOnboardingDialog(
+            isCurrentlyEnabled = uiState.isAccessibilityEnabled,
+            onOpenAccessibilitySettings = {
+                try {
+                    context.startActivity(AccessibilityServiceHelper.createOpenAccessibilitySettingsIntent())
+                } catch (e: Exception) {
+                    // Fallback to app settings
+                    context.startActivity(AccessibilityServiceHelper.createOpenAppDetailsSettingsIntent(context))
+                }
+            },
+            onOpenAppDetailsSettings = {
+                context.startActivity(AccessibilityServiceHelper.createOpenAppDetailsSettingsIntent(context))
+            },
+            onDismiss = viewModel::onDismissAccessibilityOnboarding
+        )
+    }
 }
 
 private fun handleLaunchResult(
@@ -346,6 +384,7 @@ fun MainContent(
     onStartGuidedBlock: (FocusContact) -> Unit,
     onStartGuidedUnblock: (FocusContact) -> Unit,
     onDeleteContact: (String) -> Unit,
+    onOpenAccessibilityOnboarding: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     LazyColumn(
@@ -362,6 +401,13 @@ fun MainContent(
                 selectedContacts = uiState.selectedCount,
                 blockedByAppCount = uiState.blockedByAppCount,
                 actionRequiredCount = uiState.actionRequiredCount
+            )
+        }
+
+        item {
+            AccessibilityStatusCard(
+                isEnabled = uiState.isAccessibilityEnabled,
+                onConfigure = onOpenAccessibilityOnboarding
             )
         }
 
@@ -1277,6 +1323,170 @@ fun AuditHistoryDialog(
     )
 }
 
+@Composable
+fun AccessibilityStatusCard(
+    isEnabled: Boolean,
+    onConfigure: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isEnabled) {
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            }
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = "Accessibility PoC",
+                        tint = if (isEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Automated Assistant (PoC)",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                Surface(
+                    shape = CircleShape,
+                    color = if (isEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+                ) {
+                    Text(
+                        text = if (isEnabled) "Active" else "Disabled",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isEnabled) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Text(
+                text = if (isEnabled) {
+                    "Accessibility Service is active for WhatsApp. Ready for guarded single-contact automation testing."
+                } else {
+                    "Optional helper to automate repetitive taps inside WhatsApp. Requires user-authorized Accessibility permission."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            OutlinedButton(
+                onClick = onConfigure,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (isEnabled) "Manage Service & Guide" else "Setup Accessibility Assistant")
+            }
+        }
+    }
+}
+
+@Composable
+fun AccessibilityOnboardingDialog(
+    isCurrentlyEnabled: Boolean,
+    onOpenAccessibilitySettings: () -> Unit,
+    onOpenAppDetailsSettings: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Accessibility Assistant Setup",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "WhatsApp Focus Blocker includes an experimental accessibility assistant to automate repetitive taps (Menu -> More -> Block) for selected focus contacts.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "Strict Privacy Guarantees:",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "• Scoped strictly to WhatsApp (com.whatsapp).\n• Never reads message text, chats, or personal info.\n• Operates only during explicit blocking runs.\n• Never collects or transmits data externally.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Text(
+                    text = "Android 13+ Setup Instructions:",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Text(
+                    text = "1. Sideloaded apps have accessibility restricted by Android by default.\n2. Tap 'Allow Restricted Settings' below -> Tap top-right 3-dots -> Select 'Allow restricted settings'.\n3. Tap 'Open Accessibility' below -> Turn on WhatsApp Focus Blocker.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                if (isCurrentlyEnabled) {
+                    Text(
+                        text = "Status: Service is currently ACTIVE and ready.",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onOpenAccessibilitySettings) {
+                Text("Open Accessibility")
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onOpenAppDetailsSettings) {
+                    Text("Allow Restricted")
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("Close")
+                }
+            }
+        }
+    )
+}
+
 @Preview(showBackground = true)
 @Composable
 fun MainScreenPreview() {
@@ -1289,7 +1499,9 @@ fun MainScreenPreview() {
             onToggleContact = { _, _ -> },
             onStartGuidedBlock = {},
             onStartGuidedUnblock = {},
-            onDeleteContact = {}
+            onDeleteContact = {},
+            onOpenAccessibilityOnboarding = {}
         )
     }
 }
+
