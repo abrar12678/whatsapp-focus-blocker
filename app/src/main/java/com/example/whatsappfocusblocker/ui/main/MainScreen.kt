@@ -82,6 +82,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.whatsappfocusblocker.accessibility.AccessibilityServiceHelper
+import com.example.whatsappfocusblocker.accessibility.BlockAutomationState
 import com.example.whatsappfocusblocker.theme.WhatsAppFocusBlockerTheme
 import com.example.whatsappfocusblocker.util.WhatsAppLaunchResult
 import com.example.whatsappfocusblocker.util.WhatsAppLauncher
@@ -162,6 +163,7 @@ fun MainScreen(
             onStartGuidedUnblock = viewModel::startGuidedUnblockForContact,
             onDeleteContact = viewModel::onDeleteContact,
             onOpenAccessibilityOnboarding = viewModel::onOpenAccessibilityOnboarding,
+            onStartAutomation = viewModel::onStartSingleContactAutomation,
             modifier = Modifier.padding(innerPadding)
         )
     }
@@ -219,6 +221,29 @@ fun MainScreen(
             onConfirmUnblocked = { viewModel.onConfirmManualUnblockCompleted(contact.id) },
             onSkip = { viewModel.onSkipGuidedUnblock(contact.id) },
             onDismiss = viewModel::onDismissGuidedUnblock
+        )
+    }
+
+    // Supervised Single-Contact Automation PoC Dialogs (Phase 2)
+    uiState.candidateAutomationContact?.let { contact ->
+        SupervisedAutomationConsentDialog(
+            contact = contact,
+            onStart = {
+                val result = WhatsAppLauncher.openChat(context, contact.phoneNumber)
+                handleLaunchResult(context, contact, result, viewModel)
+                viewModel.onConfirmStartAutomation()
+            },
+            onDismiss = viewModel::onDismissAutomationConsentDialog
+        )
+    }
+
+    uiState.activeAutomationContact?.let { contact ->
+        SupervisedAutomationActiveDialog(
+            contact = contact,
+            state = uiState.automationState,
+            statusMessage = uiState.automationStatusMessage,
+            onStop = viewModel::onStopAutomation,
+            onSwitchToManual = viewModel::onSwitchToManualFromAutomation
         )
     }
 
@@ -385,6 +410,7 @@ fun MainContent(
     onStartGuidedUnblock: (FocusContact) -> Unit,
     onDeleteContact: (String) -> Unit,
     onOpenAccessibilityOnboarding: () -> Unit,
+    onStartAutomation: (FocusContact) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     LazyColumn(
@@ -446,7 +472,8 @@ fun MainContent(
                     onToggleSelect = { isChecked -> onToggleContact(contact.id, isChecked) },
                     onStartGuidedBlock = { onStartGuidedBlock(contact) },
                     onStartGuidedUnblock = { onStartGuidedUnblock(contact) },
-                    onDelete = { onDeleteContact(contact.id) }
+                    onDelete = { onDeleteContact(contact.id) },
+                    onStartAutomation = { onStartAutomation(contact) }
                 )
             }
         }
@@ -715,6 +742,7 @@ fun ContactListItem(
     onStartGuidedBlock: () -> Unit,
     onStartGuidedUnblock: () -> Unit,
     onDelete: () -> Unit,
+    onStartAutomation: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -769,7 +797,24 @@ fun ContactListItem(
                 } ?: Spacer(modifier = Modifier.weight(1f))
 
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (contact.status == BlockStatus.ACTION_REQUIRED || contact.status == BlockStatus.SELECTED) {
+                    if (contact.status == BlockStatus.ACTION_REQUIRED ||
+                        contact.status == BlockStatus.SELECTED ||
+                        contact.status == BlockStatus.NEEDS_MANUAL_VERIFICATION
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.tertiaryContainer,
+                            modifier = Modifier.clickable { onStartAutomation() }
+                        ) {
+                            Text(
+                                text = "Auto (PoC)",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+
                         Surface(
                             shape = RoundedCornerShape(6.dp),
                             color = MaterialTheme.colorScheme.primaryContainer,
@@ -819,6 +864,8 @@ fun ContactStatusBadge(status: BlockStatus) {
         BlockStatus.BLOCKED_CONFIRMED, BlockStatus.BLOCKED_BY_APP -> Triple("Blocked (Confirmed)", MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.onPrimaryContainer)
         BlockStatus.USER_CONFIRMED_UNBLOCKED -> Triple("User Confirmed Unblocked", MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer)
         BlockStatus.UNBLOCKED_CONFIRMED -> Triple("Unblocked (Confirmed)", MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer)
+        BlockStatus.AUTO_BLOCKED_BY_APP -> Triple("Auto Blocked (App)", MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.onPrimaryContainer)
+        BlockStatus.NEEDS_MANUAL_VERIFICATION -> Triple("Needs Verification", MaterialTheme.colorScheme.tertiaryContainer, MaterialTheme.colorScheme.onTertiaryContainer)
         BlockStatus.MANUALLY_BLOCKED_EXTERNAL -> Triple("Manual (External)", MaterialTheme.colorScheme.tertiaryContainer, MaterialTheme.colorScheme.onTertiaryContainer)
         BlockStatus.FAILED -> Triple("Failed", MaterialTheme.colorScheme.errorContainer, MaterialTheme.colorScheme.onErrorContainer)
     }
@@ -1481,6 +1528,156 @@ fun AccessibilityOnboardingDialog(
                 }
                 TextButton(onClick = onDismiss) {
                     Text("Close")
+                }
+            }
+        }
+    )
+}
+
+@Composable
+fun SupervisedAutomationConsentDialog(
+    contact: FocusContact,
+    onStart: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Supervised PoC Automation",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Target: ${contact.name} (${contact.phoneNumber})",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "This experimental single-contact PoC automates the repetitive menu clicks in WhatsApp to block this contact.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "Guarantees & Guardrails:",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "• Scoped exclusively to WhatsApp.\n• Chat header verified before clicking.\n• 'Report contact' spam checkbox automatically unchecked.\n• No personal messages read, collected, or stored.\n• 3.5s timeout watchdog & Emergency STOP available.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onStart) {
+                Text("Start Supervised Run")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+@Composable
+fun SupervisedAutomationActiveDialog(
+    contact: FocusContact,
+    state: BlockAutomationState,
+    statusMessage: String?,
+    onStop: () -> Unit,
+    onSwitchToManual: () -> Unit
+) {
+    val isPaused = state == BlockAutomationState.PAUSED_FOR_MANUAL_INTERVENTION
+
+    AlertDialog(
+        onDismissRequest = { /* Modal: force user to tap STOP or Switch to Manual */ },
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (!isPaused) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.5.dp)
+                }
+                Text(
+                    text = if (isPaused) "Automation Paused" else "Automating Block (PoC)",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = if (isPaused) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                )
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "Contact: ${contact.name} (${contact.phoneNumber})",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Text(
+                            text = "State: $state",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = statusMessage ?: "Processing...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                if (isPaused) {
+                    Text(
+                        text = "An unexpected screen or timeout was encountered. You can complete the action manually in WhatsApp or abort.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (isPaused) {
+                Button(onClick = onSwitchToManual) {
+                    Text("Complete Manually")
+                }
+            } else {
+                Button(
+                    onClick = onStop,
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("EMERGENCY STOP")
+                }
+            }
+        },
+        dismissButton = {
+            if (isPaused) {
+                TextButton(onClick = onStop) {
+                    Text("Abort")
                 }
             }
         }

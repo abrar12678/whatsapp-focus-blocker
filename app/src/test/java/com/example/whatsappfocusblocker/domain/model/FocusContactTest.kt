@@ -29,6 +29,29 @@ class FocusContactTest {
         )
         assertTrue(appBlocked.canBeUnblockedByApp())
 
+        val autoBlocked = FocusContact(
+            id = "+1234567899",
+            name = "Auto Blocked User",
+            phoneNumber = "+1234567899",
+            status = BlockStatus.AUTO_BLOCKED_BY_APP,
+            blockedByAppTimestamp = System.currentTimeMillis()
+        )
+        assertTrue(
+            "Contact auto-blocked by app must be eligible for unblocking",
+            autoBlocked.canBeUnblockedByApp()
+        )
+
+        val needsManualVerification = FocusContact(
+            id = "+1234567898",
+            name = "Unverified Auto User",
+            phoneNumber = "+1234567898",
+            status = BlockStatus.NEEDS_MANUAL_VERIFICATION
+        )
+        assertFalse(
+            "Contact in NEEDS_MANUAL_VERIFICATION must not be automatically unblocked",
+            needsManualVerification.canBeUnblockedByApp()
+        )
+
         val actionRequired = FocusContact(
             id = "+1234567892",
             name = "Unverified User",

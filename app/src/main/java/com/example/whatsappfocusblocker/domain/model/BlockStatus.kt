@@ -41,6 +41,12 @@ enum class BlockStatus {
     /** Contact was manually blocked outside of this app prior to the session. Must NEVER be unblocked automatically. */
     MANUALLY_BLOCKED_EXTERNAL,
 
+    /** Contact was confirmed blocked via supervised Accessibility Service automation. Eligible for Unblock All. */
+    AUTO_BLOCKED_BY_APP,
+
+    /** Automated flow completed or encountered ambiguous screen requiring manual verification. NOT eligible for Unblock All until verified. */
+    NEEDS_MANUAL_VERIFICATION,
+
     /** Attempted action failed, was cancelled, or could not be verified. */
     FAILED
 }

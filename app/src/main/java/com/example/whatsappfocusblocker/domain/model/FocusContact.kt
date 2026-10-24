@@ -31,7 +31,8 @@ data class FocusContact(
     fun canBeUnblockedByApp(): Boolean {
         return status == BlockStatus.USER_CONFIRMED_BLOCKED ||
                 status == BlockStatus.BLOCKED_CONFIRMED ||
-                status == BlockStatus.BLOCKED_BY_APP
+                status == BlockStatus.BLOCKED_BY_APP ||
+                status == BlockStatus.AUTO_BLOCKED_BY_APP
     }
 
     /**
@@ -43,6 +44,7 @@ data class FocusContact(
                 status == BlockStatus.ACTION_REQUIRED ||
                 status == BlockStatus.USER_CONFIRMED_UNBLOCKED ||
                 status == BlockStatus.UNBLOCKED_CONFIRMED ||
+                status == BlockStatus.NEEDS_MANUAL_VERIFICATION ||
                 status == BlockStatus.FAILED
     }
 }

@@ -15,6 +15,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import com.example.whatsappfocusblocker.accessibility.BlockAutomationState
+import com.example.whatsappfocusblocker.accessibility.WhatsAppAutomationSupervisor
 import java.util.UUID
 
 data class FocusUiState(
@@ -44,9 +46,13 @@ data class FocusUiState(
     val showPermissionRationale: Boolean = false,
     val showPermanentlyDeniedDialog: Boolean = false,
 
-    // Accessibility Service State (Phase 1 PoC)
+    // Accessibility Service State (Phase 1 & Phase 2 PoC)
     val isAccessibilityEnabled: Boolean = false,
-    val showAccessibilityOnboarding: Boolean = false
+    val showAccessibilityOnboarding: Boolean = false,
+    val candidateAutomationContact: FocusContact? = null,
+    val activeAutomationContact: FocusContact? = null,
+    val automationState: BlockAutomationState = BlockAutomationState.IDLE,
+    val automationStatusMessage: String? = null
 ) {
     val selectedCount: Int
         get() = contacts.count { it.isSelected }
@@ -109,9 +115,29 @@ class MainScreenViewModel(
     private val _showPermissionRationale = MutableStateFlow(false)
     private val _showPermanentlyDeniedDialog = MutableStateFlow(false)
 
-    // Accessibility Service flows (Phase 1 PoC)
+    // Accessibility Service flows (Phase 1 & Phase 2 PoC)
     private val _isAccessibilityEnabled = MutableStateFlow(false)
     private val _showAccessibilityOnboarding = MutableStateFlow(false)
+    private val _candidateAutomationContact = MutableStateFlow<FocusContact?>(null)
+    private val _activeAutomationContact = MutableStateFlow<FocusContact?>(null)
+    private val _automationState = MutableStateFlow(BlockAutomationState.IDLE)
+    private val _automationStatusMessage = MutableStateFlow<String?>("Ready")
+
+    init {
+        viewModelScope.launch {
+            WhatsAppAutomationSupervisor.currentState.collect { state ->
+                _automationState.value = state
+            }
+        }
+        viewModelScope.launch {
+            WhatsAppAutomationSupervisor.statusMessage.collect { msg ->
+                _automationStatusMessage.value = msg
+            }
+        }
+        WhatsAppAutomationSupervisor.onAutomationCompleted = { contact, isVerified, details ->
+            handleAutomationCompleted(contact, isVerified, details)
+        }
+    }
 
     val uiState: StateFlow<FocusUiState> = combine(
         contactRepository.getSavedContacts(),
@@ -132,7 +158,11 @@ class MainScreenViewModel(
         _showPermissionRationale,
         _showPermanentlyDeniedDialog,
         _isAccessibilityEnabled,
-        _showAccessibilityOnboarding
+        _showAccessibilityOnboarding,
+        _candidateAutomationContact,
+        _activeAutomationContact,
+        _automationState,
+        _automationStatusMessage
     ) { args: Array<Any?> ->
         @Suppress("UNCHECKED_CAST")
         FocusUiState(
@@ -154,7 +184,11 @@ class MainScreenViewModel(
             showPermissionRationale = args[15] as Boolean,
             showPermanentlyDeniedDialog = args[16] as Boolean,
             isAccessibilityEnabled = args[17] as Boolean,
-            showAccessibilityOnboarding = args[18] as Boolean
+            showAccessibilityOnboarding = args[18] as Boolean,
+            candidateAutomationContact = args[19] as FocusContact?,
+            activeAutomationContact = args[20] as FocusContact?,
+            automationState = args[21] as BlockAutomationState,
+            automationStatusMessage = args[22] as String?
         )
     }.stateIn(
         scope = viewModelScope,
@@ -172,6 +206,125 @@ class MainScreenViewModel(
 
     fun onDismissAccessibilityOnboarding() {
         _showAccessibilityOnboarding.value = false
+    }
+
+    fun onStartSingleContactAutomation(contact: FocusContact) {
+        if (!_isAccessibilityEnabled.value) {
+            _showAccessibilityOnboarding.value = true
+            return
+        }
+        _candidateAutomationContact.value = contact
+    }
+
+    fun onDismissAutomationConsentDialog() {
+        _candidateAutomationContact.value = null
+    }
+
+    fun onConfirmStartAutomation() {
+        val contact = _candidateAutomationContact.value ?: return
+        _candidateAutomationContact.value = null
+        _activeAutomationContact.value = contact
+
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            contactRepository.recordAuditLog(
+                ActionAuditRecord(
+                    id = UUID.randomUUID().toString(),
+                    timestamp = now,
+                    actionType = ActionType.BLOCK_INITIATED,
+                    contactId = contact.id,
+                    contactName = contact.name,
+                    phoneNumber = contact.phoneNumber,
+                    previousStatus = contact.status,
+                    newStatus = BlockStatus.PENDING,
+                    details = "Supervised accessibility automation initiated for single contact",
+                    isVerified = false
+                )
+            )
+        }
+        WhatsAppAutomationSupervisor.startSingleContactBlock(contact)
+    }
+
+    fun onStopAutomation() {
+        WhatsAppAutomationSupervisor.stopAutomation("Cancelled by user via emergency STOP")
+        _activeAutomationContact.value = null
+    }
+
+    fun onSwitchToManualFromAutomation() {
+        val contact = _activeAutomationContact.value
+        WhatsAppAutomationSupervisor.stopAutomation("Switched to manual assisted mode")
+        _activeAutomationContact.value = null
+        if (contact != null) {
+            startGuidedBlockForContact(contact)
+        }
+    }
+
+    private fun handleAutomationCompleted(contact: FocusContact, isVerified: Boolean, details: String) {
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            if (isVerified) {
+                contactRepository.recordAuditLog(
+                    ActionAuditRecord(
+                        id = UUID.randomUUID().toString(),
+                        timestamp = now,
+                        actionType = ActionType.BLOCK_CONFIRMED,
+                        contactId = contact.id,
+                        contactName = contact.name,
+                        phoneNumber = contact.phoneNumber,
+                        previousStatus = contact.status,
+                        newStatus = BlockStatus.AUTO_BLOCKED_BY_APP,
+                        details = details,
+                        isVerified = true
+                    )
+                )
+                contactRepository.updateContactStatus(
+                    contactId = contact.id,
+                    newStatus = BlockStatus.AUTO_BLOCKED_BY_APP,
+                    blockedByAppTimestamp = now,
+                    message = "Auto-blocked & verified via AccessibilityService"
+                )
+                _userNotice.value = "Supervised auto-block verified for ${contact.name}"
+            } else if (details.contains("Cancelled", ignoreCase = true) || details.contains("Stopped", ignoreCase = true)) {
+                contactRepository.recordAuditLog(
+                    ActionAuditRecord(
+                        id = UUID.randomUUID().toString(),
+                        timestamp = now,
+                        actionType = ActionType.BLOCK_FAILED,
+                        contactId = contact.id,
+                        contactName = contact.name,
+                        phoneNumber = contact.phoneNumber,
+                        previousStatus = contact.status,
+                        newStatus = contact.status,
+                        details = details,
+                        isVerified = false
+                    )
+                )
+                _userNotice.value = "Automation cancelled"
+            } else {
+                contactRepository.recordAuditLog(
+                    ActionAuditRecord(
+                        id = UUID.randomUUID().toString(),
+                        timestamp = now,
+                        actionType = ActionType.BLOCK_FAILED,
+                        contactId = contact.id,
+                        contactName = contact.name,
+                        phoneNumber = contact.phoneNumber,
+                        previousStatus = contact.status,
+                        newStatus = BlockStatus.NEEDS_MANUAL_VERIFICATION,
+                        details = details,
+                        isVerified = false
+                    )
+                )
+                contactRepository.updateContactStatus(
+                    contactId = contact.id,
+                    newStatus = BlockStatus.NEEDS_MANUAL_VERIFICATION,
+                    blockedByAppTimestamp = null,
+                    message = "Automation ended without banner confirmation: $details"
+                )
+                _userNotice.value = "Action attempted, but blocked banner not verified. Marked for manual review."
+            }
+            _activeAutomationContact.value = null
+        }
     }
 
     fun onSelectContactsClicked(hasPermission: Boolean) {

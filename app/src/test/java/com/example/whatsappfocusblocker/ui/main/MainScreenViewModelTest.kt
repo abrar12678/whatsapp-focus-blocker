@@ -247,6 +247,44 @@ class MainScreenViewModelTest {
 
         assertFalse(viewModel.uiState.value.showAccessibilityOnboarding)
     }
+
+    @Test
+    fun singleContactAutomation_showsOnboardingIfDisabled() = runTest {
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            viewModel.uiState.collect {}
+        }
+        advanceUntilIdle()
+
+        val contact = FocusContact(id = "c1", name = "Dan", phoneNumber = "+222")
+        viewModel.onStartSingleContactAutomation(contact)
+        advanceUntilIdle()
+
+        // When accessibility is disabled, must direct user to onboarding
+        assertTrue(viewModel.uiState.value.showAccessibilityOnboarding)
+        assertEquals(null, viewModel.uiState.value.candidateAutomationContact)
+    }
+
+    @Test
+    fun singleContactAutomation_showsConsentAndCanBeCancelled() = runTest {
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            viewModel.uiState.collect {}
+        }
+        advanceUntilIdle()
+
+        viewModel.updateAccessibilityEnabled(true)
+        advanceUntilIdle()
+
+        val contact = FocusContact(id = "c1", name = "Dan", phoneNumber = "+222")
+        viewModel.onStartSingleContactAutomation(contact)
+        advanceUntilIdle()
+
+        assertEquals(contact, viewModel.uiState.value.candidateAutomationContact)
+
+        viewModel.onDismissAutomationConsentDialog()
+        advanceUntilIdle()
+
+        assertEquals(null, viewModel.uiState.value.candidateAutomationContact)
+    }
 }
 
 private class FakeDeviceContactsDataSource : DeviceContactsDataSource {
