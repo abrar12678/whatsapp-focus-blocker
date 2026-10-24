@@ -226,6 +226,24 @@ class MainScreenViewModel(
         _activeAutomationContact.value = contact
 
         viewModelScope.launch {
+            val targetDigits = contact.phoneNumber.replace(Regex("[^0-9]"), "")
+            val targetSuffix = if (targetDigits.length >= 7) targetDigits.takeLast(7) else targetDigits
+            val alternateNames = mutableSetOf<String>()
+
+            try {
+                val devContacts = if (_deviceContacts.value.isNotEmpty()) {
+                    _deviceContacts.value
+                } else {
+                    deviceContactsDataSource?.fetchDeviceContacts() ?: emptyList()
+                }
+                devContacts.forEach { dc ->
+                    val d = dc.phoneNumber.replace(Regex("[^0-9]"), "")
+                    if (targetSuffix.isNotBlank() && d.endsWith(targetSuffix)) {
+                        alternateNames.add(dc.name)
+                    }
+                }
+            } catch (_: Exception) {}
+
             val now = System.currentTimeMillis()
             contactRepository.recordAuditLog(
                 ActionAuditRecord(
@@ -241,8 +259,9 @@ class MainScreenViewModel(
                     isVerified = false
                 )
             )
+
+            WhatsAppAutomationSupervisor.startSingleContactBlock(contact, alternateNames.toList())
         }
-        WhatsAppAutomationSupervisor.startSingleContactBlock(contact)
     }
 
     fun onStopAutomation() {

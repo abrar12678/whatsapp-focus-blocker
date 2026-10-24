@@ -29,17 +29,17 @@ object WhatsAppAutomationSupervisor {
 
     var onAutomationCompleted: ((FocusContact, Boolean, String) -> Unit)? = null
 
-    fun startSingleContactBlock(contact: FocusContact) {
+    fun startSingleContactBlock(contact: FocusContact, alternateNames: List<String> = emptyList()) {
         stopAutomation("Starting new session")
 
-        val stateMachine = WhatsAppBlockStateMachine(contact)
+        val stateMachine = WhatsAppBlockStateMachine(contact, alternateContactNames = alternateNames)
         activeStateMachine = stateMachine
         _currentState.value = BlockAutomationState.OPENING_CHAT
         _statusMessage.value = "Opening chat for ${contact.name}..."
 
         // Register event listener with Accessibility Service
         WhatsAppAccessibilityService.eventListener = { event ->
-            handleAccessibilityEvent()
+            handleAccessibilityEvent(event)
         }
 
         startWatchdog()
@@ -64,15 +64,17 @@ object WhatsAppAutomationSupervisor {
         }
     }
 
-    private fun handleAccessibilityEvent() {
+    private fun handleAccessibilityEvent(event: android.view.accessibility.AccessibilityEvent? = null) {
         val sm = activeStateMachine ?: return
         val service = WhatsAppAccessibilityService.activeServiceInstance ?: return
-        val rootNode = service.rootInActiveWindow ?: return
+        val rootNode = WhatsAppAccessibilityInspector.findWhatsAppRoot(service, event) ?: return
 
         val snapshot = WhatsAppAccessibilityInspector.inspectCurrentScreen(
             rootNode,
-            WhatsAppAccessibilityService.WHATSAPP_PKG
+            rootNode.packageName?.toString() ?: WhatsAppAccessibilityService.WHATSAPP_PKG
         )
+
+        Log.i(TAG, "[WABlocker] State=${sm.state}, rootPkg=${rootNode.packageName}, title='${snapshot.chatTitle}', overflow=${snapshot.hasOverflowButton}, items=${snapshot.menuItems}, dialog=${snapshot.isBlockDialogVisible}, banner=${snapshot.hasBlockedStatusBanner}")
 
         val action = sm.onScreenSnapshot(snapshot)
         _currentState.value = sm.state
@@ -81,39 +83,45 @@ object WhatsAppAutomationSupervisor {
 
     private fun executeAction(action: WhatsAppBlockAction, service: WhatsAppAccessibilityService) {
         val sm = activeStateMachine ?: return
-        val root = service.rootInActiveWindow
+        val root = WhatsAppAccessibilityInspector.findWhatsAppRoot(service)
 
         when (action) {
             WhatsAppBlockAction.None -> Unit
 
             WhatsAppBlockAction.OpenOverflowMenu -> {
                 _statusMessage.value = "Opening options menu..."
-                WhatsAppAccessibilityInspector.findAndClickOverflow(root)
+                val ok = WhatsAppAccessibilityInspector.findAndClickOverflow(root)
+                Log.i(TAG, "[WABlocker] Action OpenOverflowMenu dispatched -> success=$ok")
             }
 
             WhatsAppBlockAction.ClickSafetyBannerBlock -> {
                 _statusMessage.value = "Selecting Block from safety banner..."
-                WhatsAppAccessibilityInspector.findAndClickSafetyBannerBlock(root)
+                val ok = WhatsAppAccessibilityInspector.findAndClickSafetyBannerBlock(root)
+                Log.i(TAG, "[WABlocker] Action ClickSafetyBannerBlock dispatched -> success=$ok")
             }
 
             WhatsAppBlockAction.ClickMoreMenuItem -> {
                 _statusMessage.value = "Opening 'More' submenu..."
-                WhatsAppAccessibilityInspector.findAndClickMenuItem(root, "More")
+                val ok = WhatsAppAccessibilityInspector.findAndClickMenuItem(root, "More")
+                Log.i(TAG, "[WABlocker] Action ClickMoreMenuItem dispatched -> success=$ok")
             }
 
             WhatsAppBlockAction.ClickBlockMenuItem -> {
                 _statusMessage.value = "Selecting 'Block'..."
-                WhatsAppAccessibilityInspector.findAndClickMenuItem(root, "Block")
+                val ok = WhatsAppAccessibilityInspector.findAndClickMenuItem(root, "Block")
+                Log.i(TAG, "[WABlocker] Action ClickBlockMenuItem dispatched -> success=$ok")
             }
 
             WhatsAppBlockAction.UncheckReportCheckbox -> {
                 _statusMessage.value = "Guardrail: Unchecking 'Report to WhatsApp' checkbox..."
-                WhatsAppAccessibilityInspector.findAndUncheckReportCheckbox(root)
+                val ok = WhatsAppAccessibilityInspector.findAndUncheckReportCheckbox(root)
+                Log.i(TAG, "[WABlocker] Action UncheckReportCheckbox dispatched -> success=$ok")
             }
 
             WhatsAppBlockAction.ClickConfirmBlockButton -> {
                 _statusMessage.value = "Confirming block dialog..."
-                WhatsAppAccessibilityInspector.findAndClickPositiveBlock(root)
+                val ok = WhatsAppAccessibilityInspector.findAndClickPositiveBlock(root)
+                Log.i(TAG, "[WABlocker] Action ClickConfirmBlockButton dispatched -> success=$ok")
             }
 
             is WhatsAppBlockAction.PauseForUser -> {
@@ -161,6 +169,9 @@ object WhatsAppAutomationSupervisor {
 
                         if (service != null && action !is WhatsAppBlockAction.None) {
                             executeAction(action, service)
+                        } else if (service != null && action is WhatsAppBlockAction.None) {
+                            // Check screen snapshot periodically in case no event was emitted
+                            handleAccessibilityEvent()
                         }
 
                         if (!WhatsAppBlockStateMachine.isTerminalState(sm.state) &&

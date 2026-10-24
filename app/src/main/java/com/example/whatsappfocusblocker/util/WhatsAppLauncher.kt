@@ -16,13 +16,31 @@ object WhatsAppLauncher {
 
     /**
      * Cleans and normalizes phone numbers for WhatsApp deep links.
-     * WhatsApp expects digits only without leading '+' or special characters.
+     * WhatsApp expects digits only with country code (e.g. 88017XXXXXXXX).
      */
     fun cleanPhoneNumber(rawNumber: String): String? {
         val digits = rawNumber.replace(Regex("[^0-9]"), "")
         if (digits.length < 5) return null
-        // Strip leading zeros if present (common local format)
-        return digits.trimStart('0')
+
+        // If local Bangladeshi number (11 digits starting with 01), prepend country code 880
+        if (digits.startsWith("01") && digits.length == 11) {
+            return "880" + digits.substring(1)
+        }
+
+        // If number begins with double-zero international prefix (e.g. 00880...), strip leading 00
+        if (digits.startsWith("00")) {
+            val stripped = digits.trimStart('0')
+            return if (stripped.length >= 7) stripped else null
+        }
+
+        // If already full international number without leading 0
+        if (!digits.startsWith("0") && digits.length >= 10) {
+            return digits
+        }
+
+        // Fallback: strip leading zeros if present
+        val stripped = digits.trimStart('0')
+        return if (stripped.isNotEmpty()) stripped else null
     }
 
     /**

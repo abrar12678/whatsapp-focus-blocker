@@ -19,7 +19,8 @@ import com.example.whatsappfocusblocker.domain.model.FocusContact
  */
 class WhatsAppBlockStateMachine(
     val targetContact: FocusContact,
-    private val timeoutMillis: Long = 3500L
+    private val timeoutMillis: Long = 3500L,
+    val alternateContactNames: List<String> = emptyList()
 ) {
     var state: BlockAutomationState = BlockAutomationState.IDLE
         private set
@@ -95,7 +96,7 @@ class WhatsAppBlockStateMachine(
                     return pause("Contact is not registered on WhatsApp ('Invite' prompt displayed)", currentTimeMillis)
                 }
 
-                if (snapshot.chatTitle != null || snapshot.hasOverflowButton || snapshot.hasSafetyBannerBlock) {
+                if (snapshot.chatTitle != null) {
                     transitionTo(BlockAutomationState.VALIDATING_CONTACT_IDENTITY, currentTimeMillis)
                     return onScreenSnapshot(snapshot, currentTimeMillis)
                 }
@@ -111,7 +112,8 @@ class WhatsAppBlockStateMachine(
                         transitionTo(BlockAutomationState.OPENING_OVERFLOW_MENU, currentTimeMillis)
                         return WhatsAppBlockAction.OpenOverflowMenu
                     } else {
-                        return pause("Unable to find menu overflow or safety banner in verified chat", currentTimeMillis)
+                        // Wait for overflow button or safety banner to render
+                        return WhatsAppBlockAction.None
                     }
                 } else {
                     return pause(
@@ -122,24 +124,30 @@ class WhatsAppBlockStateMachine(
             }
 
             BlockAutomationState.OPENING_OVERFLOW_MENU -> {
-                if (snapshot.isOverflowMenuVisible || snapshot.menuItems.isNotEmpty()) {
-                    val hasBlock = snapshot.menuItems.any { it.contains("Block", ignoreCase = true) }
-                    val hasMore = snapshot.menuItems.any { it.contains("More", ignoreCase = true) }
-
-                    if (hasBlock) {
-                        transitionTo(BlockAutomationState.AWAITING_BLOCK_DIALOG, currentTimeMillis)
-                        return WhatsAppBlockAction.ClickBlockMenuItem
-                    } else if (hasMore) {
-                        transitionTo(BlockAutomationState.SELECTING_MORE, currentTimeMillis)
-                        return WhatsAppBlockAction.ClickMoreMenuItem
-                    } else {
-                        return pause("Overflow menu items did not contain expected 'More' or 'Block'", currentTimeMillis)
-                    }
+                val hasBlock = snapshot.menuItems.any {
+                    (it.equals("Block", ignoreCase = true) || it.equals("Block contact", ignoreCase = true) || it.equals("Block button", ignoreCase = true) || it.contains("ব্লক")) &&
+                    !it.contains("unblock", ignoreCase = true) && !it.contains("blocked this", ignoreCase = true)
                 }
+                val hasMore = snapshot.menuItems.any {
+                    it.equals("More", ignoreCase = true) || it.equals("More button", ignoreCase = true) || it.contains("আরও")
+                }
+
+                if (hasBlock) {
+                    transitionTo(BlockAutomationState.AWAITING_BLOCK_DIALOG, currentTimeMillis)
+                    return WhatsAppBlockAction.ClickBlockMenuItem
+                } else if (hasMore) {
+                    transitionTo(BlockAutomationState.SELECTING_MORE, currentTimeMillis)
+                    return WhatsAppBlockAction.ClickMoreMenuItem
+                }
+                // If neither 'Block' nor 'More' is visible yet, wait for popup menu to finish rendering.
+                // Guarded by the 3.5s watchdog timeout.
             }
 
             BlockAutomationState.SELECTING_MORE -> {
-                val hasBlock = snapshot.menuItems.any { it.contains("Block", ignoreCase = true) }
+                val hasBlock = snapshot.menuItems.any {
+                    (it.equals("Block", ignoreCase = true) || it.equals("Block contact", ignoreCase = true) || it.equals("Block button", ignoreCase = true) || it.contains("ব্লক")) &&
+                    !it.contains("unblock", ignoreCase = true) && !it.contains("blocked this", ignoreCase = true)
+                }
                 if (hasBlock) {
                     transitionTo(BlockAutomationState.AWAITING_BLOCK_DIALOG, currentTimeMillis)
                     return WhatsAppBlockAction.ClickBlockMenuItem
@@ -171,9 +179,8 @@ class WhatsAppBlockStateMachine(
                     if (snapshot.hasPositiveBlockButton) {
                         transitionTo(BlockAutomationState.VERIFYING_BLOCKED_STATUS, currentTimeMillis)
                         return WhatsAppBlockAction.ClickConfirmBlockButton
-                    } else {
-                        return pause("Could not locate positive 'Block' confirmation button in dialog", currentTimeMillis)
                     }
+                    // Wait for positive block button to finish rendering; guarded by 3.5s watchdog.
                 }
             }
 
@@ -198,27 +205,40 @@ class WhatsAppBlockStateMachine(
     }
 
     private fun pause(reason: String, currentTimeMillis: Long): WhatsAppBlockAction {
+        val old = state
         state = BlockAutomationState.PAUSED_FOR_MANUAL_INTERVENTION
         stateEnterTimestamp = currentTimeMillis
         pauseReason = reason
+        try {
+            android.util.Log.w("WABlocker", "State paused: $old -> PAUSED. Reason: $reason")
+        } catch (_: Throwable) {}
         return WhatsAppBlockAction.PauseForUser(reason)
     }
 
     private fun transitionTo(newState: BlockAutomationState, currentTimeMillis: Long) {
+        val old = state
         state = newState
         stateEnterTimestamp = currentTimeMillis
+        try {
+            android.util.Log.i("WABlocker", "State transition: $old -> $newState")
+        } catch (_: Throwable) {}
     }
 
     fun validateContactIdentity(title: String?): Boolean {
         if (title.isNullOrBlank()) return false
         val cleanTitle = title.trim().lowercase()
-        val cleanContactName = targetContact.name.trim().lowercase()
         val rawContactPhone = targetContact.phoneNumber.replace(Regex("[^0-9]"), "")
         val titleDigits = title.replace(Regex("[^0-9]"), "")
 
-        // Name match (title contains contact name or vice versa)
-        if (cleanContactName.isNotBlank() && (cleanTitle.contains(cleanContactName) || cleanContactName.contains(cleanTitle))) {
-            return true
+        // Name match (title contains target contact name or known device alias for same number)
+        val validNames = (listOf(targetContact.name) + alternateContactNames)
+            .map { it.trim().lowercase() }
+            .filter { it.isNotBlank() }
+
+        for (name in validNames) {
+            if (cleanTitle.contains(name) || name.contains(cleanTitle)) {
+                return true
+            }
         }
 
         // Phone suffix match (last 7 or more digits)
